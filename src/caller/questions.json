@@ -1,0 +1,7 @@
+{
+  "questions": [
+    "What is the total size of the apartment in m²?",
+    "How many rooms does the apartment have?",
+    "Which floor is the apartment on?"
+  ]
+}
