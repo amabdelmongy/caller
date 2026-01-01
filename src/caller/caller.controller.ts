@@ -12,7 +12,7 @@ import { CallerService } from './caller.service';
 
 @ApiTags('chat')
 @Controller('chat')
-export class DeepSeekController {
+export class CallerController {
   constructor(private readonly callerService: CallerService) {}
 
   @Post()

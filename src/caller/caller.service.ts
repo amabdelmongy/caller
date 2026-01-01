@@ -6,6 +6,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 
 import { CallerStorage } from './caller.storage';
+import { analyzeAnswer } from './analyzer';
 
 type QuestionsFile = { questions: string[] };
 
@@ -17,31 +18,46 @@ export class CallerService {
   private readonly questionsPath =
     process.env.QUESTIONS_PATH ?? path.resolve(this.callerDir, 'questions.json');
 
-  private readonly storage = new CallerStorage(this.callerDir);
+  private readonly storage = new CallerStorage(
+    process.env.CALLER_DIR ?? path.resolve(__dirname)
+  );
 
   private readonly llm = new ChatOpenAI({
-    model: process.env.MODEL ,
+    model: process.env.MODEL,
     apiKey: process.env.API_KEY,
     configuration: { baseURL: process.env.BASE_URL },
     temperature: 0,
   });
 
   async chat(usernameRaw: string, message: string, questionNum?: number): Promise<string> {
+    console.log(`[DEBUG] chat called - username: ${usernameRaw}, message: ${message}, questionNum: ${questionNum}`);
+
     const questions = this.loadQuestions();
     if (!questions.length) throw new InternalServerErrorException('No questions configured.');
+
+    const lastAnsweredIdx =
+      typeof questionNum === 'number' && Number.isFinite(questionNum) && questionNum >= 0
+        ? questionNum
+        : -1;
+
+    console.log(`[DEBUG] lastAnsweredIdx: ${lastAnsweredIdx}`);
+
+    let analysisResult;
+    if (lastAnsweredIdx >= 0 && lastAnsweredIdx < questions.length) {
+      const answeredQuestion = questions[lastAnsweredIdx];
+      console.log(`[DEBUG] Analyzing answer for question: ${answeredQuestion}`);
+      analysisResult = await analyzeAnswer(this.llm, answeredQuestion, message);
+      console.log(`[DEBUG] Analysis result:`, analysisResult);
+    }
+
 
     this.storage.logAnswer({
       usernameRaw,
       questions,
       answer: message,
       questionNumber: questionNum,
+      analysisResult,
     });
-
-    // Determine next question from questionNum (0-based)
-    const lastAnsweredIdx =
-      typeof questionNum === 'number' && Number.isFinite(questionNum) && questionNum >= 0
-        ? questionNum
-        : -1;
 
     const nextIdx = lastAnsweredIdx + 1;
 

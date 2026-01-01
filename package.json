@@ -1,5 +1,5 @@
 {
-  "name": "call-api",
+  "name": "caller",
   "version": "1.0.0",
   "description": "NestJS app with LangChain and DeepSeek API",
   "main": "dist/main.js",
