@@ -100,6 +100,207 @@ Call-api/
 - `API_KEY`: API key for your OpenAI-compatible provider
 - `BASE_URL`: Base URL for the OpenAI-compatible API (optional; omit to use OpenAI default)
 
+## Flow
+
+This service runs a scripted calling conversation driven by `questions.json`, with persisted state per `username`.
+
+### High-level lifecycle
+
+1. **Start (`startConversation(username)`)**
+   - Sanitizes `username`.
+   - Clears any existing memory + stored conversation state.
+   - Loads `questions.json`.
+   - Sends: `intro.greeting` + the first question (`questions[0]`).
+   - Initializes state:
+     - `currentQuestionIndex = 0`
+     - `answers = {}`
+     - `skipQuestions = []`
+     - `interestedInSelling = null`
+   - Persists state + appends a log entry.
+
+2. **Chat loop (`chat(username, message)`)**
+   - Ensures a conversation exists (otherwise starts one).
+   - Loads saved state into memory if needed.
+   - Adds the user message to memory.
+
+   **A) Rebuttal path (user asks a question)**
+   - If `isUserAskingQuestion(message)` is true:
+     - Attempts `handleRebuttal(message)` (keyword → `script.rebuttals[key]`)
+     - If matched:
+       - Responds with the rebuttal text
+       - Logs + persists
+       - Returns early (does not advance to next scripted question)
+
+   **B) Answer analysis + conditional flow**
+   - Analyzes the user answer against the current question via `analyzeAnswer(...)`.
+   - Stores the raw answer in `answers["q{currentIdx}"]`.
+   - Runs conditional branching via `evaluateConditionalFlow(...)`:
+     - may set `interestedInSelling`
+     - may add indices to `skipQuestions`
+     - may override `currentQuestionIndex`
+     - may return an immediate `response`
+   - If a conditional `response` is returned:
+     - Responds with it, logs + persists, returns early.
+
+   **C) Move to next question (default)**
+   - Computes `nextIdx = currentQuestionIndex + 1`, skipping any indices in `skipQuestions`.
+   - If `nextIdx >= questions.length`:
+     - Responds with `closing.thankYou` and ends.
+   - Else:
+     - Formats the next question using LLM context (`formatQuestion(...)`) and returns it.
+
+### Pseudocode
+
+```text
+startConversation(user):
+  clear memory/state
+  send greeting + questions[0]
+  set currentQuestionIndex=0
+  persist
+
+chat(user, msg):
+  if no conversation: return startConversation(user)
+  restore state if needed
+  addUserMessage(msg)
+
+  if isUserAskingQuestion(msg):
+    rebuttal = handleRebuttal(msg)
+    if rebuttal: respond(rebuttal); persist; return
+
+  analyzeAnswer(currentQuestion, msg)
+  save answers[q{idx}] = msg
+
+  conditional = evaluateConditionalFlow(...)
+  apply conditional updates (skipQuestions, interestedInSelling, nextQuestionIndex)
+  if conditional.response: respond(conditional.response); persist; return
+
+  nextIdx = computeNextSkippingSkips()
+  if nextIdx >= total: respond(closing.thankYou); return
+  respond(formatQuestion(questions[nextIdx]))
+```
+
+### Flowchart
+
+```
+                              ┌─────────────────┐
+                              │     START       │
+                              └────────┬────────┘
+                                       │
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │ Q0: Have you ever considered selling?│
+                    └──────────────────┬───────────────────┘
+                                       │
+                      ┌────────────────┴────────────────┐
+                      │                                 │
+                      ▼                                 ▼
+                 ┌────────┐                        ┌────────┐
+                 │  YES   │                        │   NO   │
+                 └────┬───┘                        └────┬───┘
+                      │                                 │
+                      │                                 ▼
+                      │              ┌─────────────────────────────────────┐
+                      │              │ Q1: Consider selling in near future?│
+                      │              └──────────────────┬──────────────────┘
+                      │                                 │
+                      │                    ┌────────────┴────────────┐
+                      │                    │                         │
+                      │                    ▼                         ▼
+                      │               ┌────────┐                ┌────────┐
+                      │               │  YES   │                │   NO   │
+                      │               └────┬───┘                └────┬───┘
+                      │                    │                         │
+                      │                    │                         ▼
+                      │                    │    ┌────────────────────────────────┐
+                      │                    │    │ Q2: Any other property to sell?│
+                      │                    │    └──────────────┬─────────────────┘
+                      │                    │                   │
+                      │                    └─────────┬─────────┘
+                      │                              │
+                      │  ┌───────────────────────────┘
+                      │  │ (Skip Q1, Q2)
+                      ▼  ▼
+               ┌─────────────────────────────┐
+               │ Q3: Do you have a price range?│
+               └──────────────┬──────────────┘
+                              │
+                              ▼
+               ┌─────────────────────────────┐
+               │ Q4: Is this price negotiable?│
+               └──────────────┬──────────────┘
+                              │
+                     ┌────────┴────────┐
+                     │                 │
+                     ▼                 ▼
+                ┌────────┐        ┌────────┐
+                │  YES   │        │   NO   │
+                └────┬───┘        └────┬───┘
+                     │                 │
+                     ▼                 │
+     ┌───────────────────────────────┐ │
+     │ Q5: What's your bottom line?  │ │
+     └───────────────┬───────────────┘ │
+                     │                 │
+                     └────────┬────────┘
+                              │
+                              ▼
+               ┌─────────────────────────────┐
+               │ Q6-Q14: Condition Questions │
+               │ (Roof, HVAC, Kitchen, etc.) │
+               └──────────────┬──────────────┘
+                              │
+                              ▼
+          ┌────────────────────────────────────────┐
+          │ Q15: Is property occupied by tenants?  │
+          └────────────────────┬───────────────────┘
+                               │
+                  ┌────────────┴────────────┐
+                  │                         │
+                  ▼                         ▼
+           ┌───────────┐             ┌─────────────┐
+           │  TENANTS  │             │ OWNER (Me)  │
+           └─────┬─────┘             └──────┬──────┘
+                 │                          │
+                 ▼                          │
+    ┌─────────────────────────────┐         │
+    │ Q16: Monthly or Annual lease?│         │
+    └──────────────┬──────────────┘         │
+                   │                        │
+          ┌────────┴────────┐               │
+          │                 │               │
+          ▼                 ▼               │
+     ┌─────────┐       ┌─────────┐          │
+     │ MONTHLY │       │ ANNUAL  │          │
+     └────┬────┘       └────┬────┘          │
+          │                 │               │
+          │                 ▼               │
+          │    ┌────────────────────────┐   │
+          │    │ Q17: When does it expire?│  │
+          │    └───────────┬────────────┘   │
+          │                │               │
+          └───────┬────────┘               │
+                  │    (Skip Q16, Q17)     │
+                  └───────────┬────────────┘
+                              │
+                              ▼
+               ┌─────────────────────────────┐
+               │ Q18: Reason for selling?    │
+               └──────────────┬──────────────┘
+                              │
+                              ▼
+               ┌─────────────────────────────┐
+               │ Q19-Q24: Closing Questions  │
+               │ (Timeline, Contact, Email,  │
+               │  Referrals)                 │
+               └──────────────┬──────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │   THANK YOU     │
+                    │     (END)       │
+                    └─────────────────┘
+```
+
 ## Notes
 
 This service uses an OpenAI-compatible Chat Completions endpoint via LangChain (`@langchain/openai`).
