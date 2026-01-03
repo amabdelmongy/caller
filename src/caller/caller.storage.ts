@@ -219,6 +219,35 @@ export class CallerStorage {
     );
   }
 
+  listLogFiles(): Array<{ name: string; updatedAt: string; size: number }> {
+    this.ensureDirs();
+
+    if (!fs.existsSync(this.logsDir)) return [];
+
+    return fs
+      .readdirSync(this.logsDir)
+      .filter((name) => name.endsWith('.log') || name.endsWith('.txt') || name.endsWith('.jsonl'))
+      .map((name) => {
+        const fullPath = path.join(this.logsDir, name);
+        const st = fs.statSync(fullPath);
+        return { name, updatedAt: new Date(st.mtimeMs).toISOString(), size: st.size };
+      })
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }
+
+  readLogFile(filename: string): string {
+    this.ensureDirs();
+
+    // Prevent traversal & only allow known files (now list returns objects)
+    const allowed = new Set(this.listLogFiles().map((f) => f.name));
+    if (!allowed.has(filename)) {
+      throw new Error('Log file not found.');
+    }
+
+    const fullPath = path.resolve(this.logsDir, filename);
+    return fs.readFileSync(fullPath, 'utf8');
+  }
+
   private sanitizeUsername(username: string) {
     const v = (username ?? "").trim();
     if (!v) return "anonymous";
