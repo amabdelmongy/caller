@@ -1,7 +1,87 @@
 {
+  "intro": {
+    "greeting": "Hi {HOMEOWNER}, my name's {AGENT_NAME}, I'm calling you about the property on {PROPERTY_ADDRESS}, just wanted to ask if you've ever considered or had any intention of selling before?"
+  },
   "questions": [
-    "What is the total size of the apartment in m²?",
-    "How many rooms does the apartment have?",
-    "Which floor is the apartment on?"
+    "Have you ever considered or had any intention of selling before?",
+    "Is selling something you may consider doing in the near future?",
+    "Do you happen to have any other property you would like to sell?",
+    "Do you have a price range in mind?",
+    "Is this number negotiable?",
+    "What's your absolute bottom line in terms of price?",
+    "What amount would you gladly walk away with?",
+    "May I ask, how old is the roof?",
+    "Any issues in the foundation? Any cracks or leaks?",
+    "How old is the HVAC (Heating, Ventilation, Air Conditioning system)? How old is the hot water heater? Any plumbing updates in the past 5 years?",
+    "Have you made any updates to the kitchen or bathrooms within the past 5 years?",
+    "Does the property need any kind of major or minor repairs or any cosmetic work that needs to be done?",
+    "How many bedrooms and bathrooms? How many car garages?",
+    "On a scale of 1 to 10, how would you rate the condition of your property?",
+    "Is it currently listed with a realtor or is it off the market?",
+    "Is the property occupied by you or tenants (renters)?",
+    "Are the tenants on a monthly lease or an annual lease?",
+    "When will the lease expire?",
+    "What is the main reason for selling this property?",
+    "Is the property free and clear or do you still owe anything on it?",
+    "If we could make the deal work, how soon do you think we can close the deal?",
+    "Can we reach you again on this number?",
+    "When's the best time we can call you back?",
+    "What is your email address?",
+    "Do you know anyone else who might be interested in selling their property?"
+  ],
+  "conditionalFlows": {
+    "initialResponse": {
+      "no": {
+        "followUp": "Is it something you may consider doing in the near future?",
+        "noAgain": "Do you happen to have any other property you would like to sell?"
+      },
+      "yes": {
+        "followUp": "Great! May I ask you a few questions about the condition? It will take only 2 mins of your time."
+      }
+    },
+    "priceNegotiable": {
+      "yes": {
+        "followUp": "What's your absolute bottom line in terms of price?"
+      }
+    },
+    "tenantOccupied": {
+      "yes": {
+        "followUp": "Are they on a monthly lease or an annual lease?",
+        "annual": "When will the lease expire?"
+      }
+    }
+  },
+  "rebuttals": {
+    "whereLocated": "We're located in {STATE_CAPITAL}, {STATE}.",
+    "personalLocation": "We've been working from home since COVID.",
+    "whoCallsBack": "One of the partners is going to be giving you a call. We have a very large acquisition team that will call you back.",
+    "callbackNumber": "You can reach us on the same phone number that shows up on your caller ID.",
+    "whatDoWithProperty": "Actually it depends on the neighborhood and the area, we might put it out for tenants or resell.",
+    "renterConcern": "We like to buy the house free of tenants or if the lease expires in 6 months.",
+    "whyCalling": "I'm a cash buyer and I'm reaching out to see if you've ever considered selling your property before. We are looking to buy properties in the area.",
+    "scamSpam": "It's by no means an indication of anything troubling. We are a well-known investment company, we work all over the US. If you would like, I can get your email and send you everything about the company and the offer as well in case we're doing business together.",
+    "website": "The website is under maintenance, but I can get your email and send you a formal email about the company as well as the offer in case we're doing business together.",
+    "wantsOfferNow": "Let me just explain that we cannot run numbers blindly. In order for us to give you an educated offer, I'll need to confirm some information here.",
+    "comeVisitFirst": "Basically after running the numbers, my partner will give you a visit. One of us will call you to set up an appointment whenever you want us to take a look at the property and we're not going to charge you any amount of money when it comes to the inspection.",
+    "whereGotNumber": "I am reaching out to homeowners in the area and we requested this info from public records.",
+    "whatPublicRecords": "It's the homeowners registered info in public records and we got it from city hall.",
+    "officeAddress": "Can you provide me with your email and I can send you all the information and phone numbers related to our company.",
+    "officeAddressPersistent": "I apologize but for security reasons we can't provide this info over the phone.",
+    "notEnoughMoney": "Did someone make you an offer and they couldn't fulfill it? How much were you asking?",
+    "checkInternet": "I could check out the property on the internet but at the end of the day, who's going to know your property more, you or a website?"
+  },
+  "closing": {
+    "thankYou": "I'd like to thank you for your time and the info. The next step is that one of our acquisition team will call you back to discuss the next step and follow up with you regarding our call within the next two business days.",
+    "interestScale": "On a scale from 1-10, how would you rate your interest in selling the property?",
+    "interestThreshold": {
+      "low": "1-4 = no push",
+      "high": "5+ = push"
+    }
+  },
+  "reminders": [
+    "Always ask for email",
+    "Always ask the referral question",
+    "Do not mention offer unless seller gives POSITIVE answer to sell and close within 6 months MAX",
+    "We have a flexible closing timeline up to 6 months"
   ]
 }

@@ -1,10 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { AnalysisResult } from "./types";
-// import { getQuestionTexts } from "./questions.config";
 
 export type UserState = {
   logPath?: string;
+  currentQuestionIndex?: number;
+  answers?: Record<string, string>;
+  skipQuestions?: number[];
+  interestedInSelling?: boolean | null;
 };
 
 export class CallerStorage {
@@ -42,6 +45,15 @@ export class CallerStorage {
       return {
         logPath:
           typeof parsed.logPath === "string" ? parsed.logPath : undefined,
+        currentQuestionIndex:
+          typeof parsed.currentQuestionIndex === "number"
+            ? parsed.currentQuestionIndex
+            : undefined,
+        answers: parsed.answers ?? {},
+        skipQuestions: Array.isArray(parsed.skipQuestions)
+          ? parsed.skipQuestions
+          : [],
+        interestedInSelling: parsed.interestedInSelling ?? null,
       };
     } catch {
       return {};
@@ -49,7 +61,66 @@ export class CallerStorage {
   }
 
   writeState(statePath: string, state: UserState) {
-    fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  }
+
+  getCurrentQuestionIndex(usernameRaw: string): number {
+    this.ensureDirs();
+    const username = this.sanitizeUsername(usernameRaw);
+    const statePath = this.getStatePath(username);
+    const state = this.readState(statePath);
+    return state.currentQuestionIndex ?? -1;
+  }
+
+  updateQuestionIndex(usernameRaw: string, questionIndex: number): void {
+    this.ensureDirs();
+    const username = this.sanitizeUsername(usernameRaw);
+    const statePath = this.getStatePath(username);
+    const state = this.readState(statePath);
+    state.currentQuestionIndex = questionIndex;
+    this.writeState(statePath, state);
+  }
+
+  saveConversationState(
+    usernameRaw: string,
+    data: {
+      currentQuestionIndex: number;
+      answers: Record<string, string>;
+      skipQuestions: number[];
+      interestedInSelling: boolean | null;
+    }
+  ): void {
+    this.ensureDirs();
+    const username = this.sanitizeUsername(usernameRaw);
+    const statePath = this.getStatePath(username);
+    const state = this.readState(statePath);
+
+    state.currentQuestionIndex = data.currentQuestionIndex;
+    state.answers = data.answers;
+    state.skipQuestions = data.skipQuestions;
+    state.interestedInSelling = data.interestedInSelling;
+
+    if (!state.logPath) {
+      state.logPath = this.getLogPath(username);
+    }
+
+    this.writeState(statePath, state);
+  }
+
+  loadConversationState(usernameRaw: string): UserState {
+    this.ensureDirs();
+    const username = this.sanitizeUsername(usernameRaw);
+    const statePath = this.getStatePath(username);
+    return this.readState(statePath);
+  }
+
+  clearConversationState(usernameRaw: string): void {
+    this.ensureDirs();
+    const username = this.sanitizeUsername(usernameRaw);
+    const statePath = this.getStatePath(username);
+    if (fs.existsSync(statePath)) {
+      fs.unlinkSync(statePath);
+    }
   }
 
   appendLog(
@@ -67,9 +138,33 @@ export class CallerStorage {
       line += `  Full Answer: ${answer}\n`;
 
       if (analysisResult) {
-        line += `  Extracted Value: ${analysisResult.data.extractedValue}\n`;
-        line += `  Value Type: ${analysisResult.data.valueType}\n`;
+        const { data } = analysisResult;
+
+        // Handle complex extracted values
+        const extractedValueStr = typeof data.extractedValue === 'object'
+          ? JSON.stringify(data.extractedValue)
+          : String(data.extractedValue);
+
+        line += `  Extracted Value: ${extractedValueStr}\n`;
+        line += `  Value Type: ${data.valueType}\n`;
         line += `  Extraction Success: ${analysisResult.success}\n`;
+
+        // Log metadata if present
+        if (data.metadata) {
+          if (data.metadata.details) {
+            line += `  Details: ${data.metadata.details}\n`;
+          }
+          if (data.metadata.amountOwed !== undefined && data.metadata.amountOwed !== null) {
+            line += `  Amount Owed: $${data.metadata.amountOwed}\n`;
+          }
+          if (data.metadata.daysEstimate !== undefined && data.metadata.daysEstimate !== null) {
+            line += `  Days Estimate: ${data.metadata.daysEstimate}\n`;
+          }
+          if (data.metadata.realtorName) {
+            line += `  Realtor: ${data.metadata.realtorName}\n`;
+          }
+        }
+
         if (analysisResult.error) {
           line += `  Error: ${analysisResult.error}\n`;
         }

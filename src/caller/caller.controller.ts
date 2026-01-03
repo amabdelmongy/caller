@@ -22,11 +22,11 @@ export class CallerController {
   @ApiProduces('text/plain')
   @ApiOkResponse({
     description: 'AI response received successfully (plain text)',
-    schema: { type: 'string', example: '1) What is the total size of the apartment in m²?' },
+    schema: { type: 'string', example: ' Have you ever considered or had any intention of selling before?' },
   })
   @ApiResponse({ status: 400, description: 'Bad request' })
   @ApiResponse({ status: 500, description: 'Internal server error' })
   async chat(@Body() dto: ChatRequestDto): Promise<string> {
-    return this.callerService.chat(dto.username, dto.message, dto.questionNum);
+    return this.callerService.chat(dto.username, dto.message);
   }
 }
