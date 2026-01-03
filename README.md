@@ -52,7 +52,7 @@ PORT=3000
 npm run start:dev
 
 # Production mode
-npm run start:prod
+npm run start
 ```
 
 ## Usage
@@ -301,17 +301,35 @@ chat(user, msg):
                     └─────────────────┘
 ```
 
-## Telegram Bot (Node.js / TypeScript)
+## Telegram Bot Usage
 
-Direct mode only: the bot loads Nest `AppModule` and calls `CallerService` in-process (no HTTP).
+This project can run a Telegram bot **inside the same NestJS process** (no HTTP proxy). The bot forwards Telegram messages to `CallerService` directly.
 
-### Env
-- `TELEGRAM_BOT_TOKEN`
+### 1) Create a Telegram bot
+1. Open Telegram and chat with **@BotFather**
+2. Run `/newbot`
+3. Copy the token and set it as `TELEGRAM_BOT_TOKEN`
 
-### Run
+### 2) Configure environment variables
+
+In `.env` (example keys):
 ```
-npm run bot:dev
+TELEGRAM_BOT_TOKEN=your_bot_token
+START_TELEGRAM_BOT=true
 ```
+
+### 3) Start the application
+```bash
+npm run start
+```
+
+### 4) Find your chat or channel ID
+1. Add the bot to a group or channel
+2. Use a tool like [getidsbot](https://t.me/getidsbot) to retrieve the chat ID
+
+### 5) Supported commands
+- `/start` - Start a new conversation
+- `/reset` - Reset the current conversation
 
 ## Notes
 
