@@ -6,7 +6,7 @@
   "scripts": {
     "start": "ts-node src/main.ts",
     "start:dev": "nest start --debug --watch",
-    "build": "tsc",
+    "build": "node scripts/copy-swagger-assets.js && tsc",
     "start:prod": "node dist/main.js"
   },
   "dependencies": {

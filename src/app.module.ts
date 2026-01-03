@@ -5,17 +5,16 @@ import { HealthController } from './health/health.controller';
 
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
-import swaggerUiDist from 'swagger-ui-dist';
 
 @Module({
   imports: [
     CallerModule,
 
-    // Serve Swagger UI assets so /swagger/swagger-ui*.js|css resolve in prod
+    // Serve Swagger UI assets from public/swagger so /swagger/swagger-ui*.js|css resolve in prod
     ServeStaticModule.forRoot({
-      rootPath: join(swaggerUiDist.getAbsoluteFSPath()),
+      rootPath: join(process.cwd(), 'public', 'swagger'),
       serveRoot: '/swagger',
-      exclude: ['/swagger', '/swagger/'],
+      exclude: ['/swagger', '/swagger/'], // let SwaggerModule serve the HTML at /swagger
     }),
   ],
   controllers: [LogsController, HealthController],
