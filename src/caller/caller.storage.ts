@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { AnalysisResult } from "./types";
+// import { getQuestionTexts } from "./questions.config";
 
 export type UserState = {
   logPath?: string;
@@ -101,6 +102,7 @@ export class CallerStorage {
     }
 
     const qNum = params.questionNumber;
+    // const questions = params.questions ?? getQuestionTexts();
 
     const qText =
       typeof qNum === "number" && Number.isFinite(qNum) && qNum >= 0
