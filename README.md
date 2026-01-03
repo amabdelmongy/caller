@@ -329,7 +329,7 @@ npm run start
 
 ### 5) Supported commands
 - `/start` - Start a new conversation
-- `/reset` - Reset the current conversation
+- `/reset` - Reset the current conversation (**type `/reset` in the Telegram chat with the bot to clear your session and start over**)
 
 ## Notes
 
