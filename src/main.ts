@@ -7,6 +7,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { ChatRequestDto } from './caller/dto/chat.dto';
+import { startTelegramBot } from './bot/telegram-bot';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -33,6 +34,10 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Application is running on: http://localhost:${port}`);
   console.log(`Swagger documentation: http://localhost:${port}/swagger`);
+
+  if (process.env.START_TELEGRAM_BOT === 'true') {
+    await startTelegramBot(app);
+  }
 }
 
 bootstrap();

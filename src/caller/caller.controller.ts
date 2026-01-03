@@ -29,4 +29,19 @@ export class CallerController {
   async chat(@Body() dto: ChatRequestDto): Promise<string> {
     return this.callerService.chat(dto.username, dto.message);
   }
+
+  @Post('reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reset conversation state for a username' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { username: { type: 'string', example: 'UserName' } },
+      required: ['username'],
+    },
+  })
+  async reset(@Body('username') username: string): Promise<{ ok: true }> {
+    await this.callerService.resetConversation(username);
+    return { ok: true };
+  }
 }

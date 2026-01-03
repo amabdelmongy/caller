@@ -301,6 +301,18 @@ chat(user, msg):
                     └─────────────────┘
 ```
 
+## Telegram Bot (Node.js / TypeScript)
+
+Direct mode only: the bot loads Nest `AppModule` and calls `CallerService` in-process (no HTTP).
+
+### Env
+- `TELEGRAM_BOT_TOKEN`
+
+### Run
+```
+npm run bot:dev
+```
+
 ## Notes
 
 This service uses an OpenAI-compatible Chat Completions endpoint via LangChain (`@langchain/openai`).

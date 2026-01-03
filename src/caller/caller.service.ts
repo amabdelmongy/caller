@@ -155,6 +155,12 @@ export class CallerService {
     return response;
   }
 
+  async resetConversation(usernameRaw: string): Promise<void> {
+    const username = this.sanitizeUsername(usernameRaw);
+    await this.memoryManager.clearMemory(username);
+    this.storage.clearConversationState(username);
+  }
+
   private async handleConditionalFlow(
     username: string,
     script: QuestionsFile,
