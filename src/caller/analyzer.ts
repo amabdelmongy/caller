@@ -178,20 +178,3 @@ export function isUserAskingQuestion(message: string): boolean {
 
   return questionIndicators.some(pattern => pattern.test(message.trim()));
 }
-
-// Helper to detect sentiment/interest level
-export function detectInterestLevel(message: string): "high" | "medium" | "low" | "negative" {
-  const lowerMessage = message.toLowerCase();
-
-  const highInterest = /\b(yes|definitely|absolutely|interested|ready|asap|soon|let's do it)\b/;
-  const mediumInterest = /\b(maybe|possibly|might|could|thinking|considering)\b/;
-  const lowInterest = /\b(not sure|don't know|unlikely|probably not)\b/;
-  const negative = /\b(no|never|not interested|stop calling|don't call|remove me)\b/;
-
-  if (negative.test(lowerMessage)) return "negative";
-  if (highInterest.test(lowerMessage)) return "high";
-  if (mediumInterest.test(lowerMessage)) return "medium";
-  if (lowInterest.test(lowerMessage)) return "low";
-
-  return "medium"; // default
-}

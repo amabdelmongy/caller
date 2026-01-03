@@ -124,55 +124,73 @@ export class CallerStorage {
   }
 
   appendLog(
-    logPath: string,
-    num: number,
-    question: string,
-    answer: string,
+    username: string,
+    questionIndex: number,
+    questionText: string,
+    aiResponse: string,
+    userMessage: string,
     analysisResult?: AnalysisResult
-  ) {
-    try {
-      fs.mkdirSync(path.dirname(logPath), { recursive: true });
-      const ts = new Date().toISOString();
+  ): void {
+    this.ensureDirs();
+    const state = this.loadConversationState(username);
 
-      let line = `[${ts}] Q${num}: ${question}\n`;
-      line += `  Full Answer: ${answer}\n`;
+    if (!state.logPath) {
+      const timestamp = new Date().toISOString().replace(/:/g, '-');
+      state.logPath = path.join(this.logsDir, `${username}.${timestamp}.log`);
+
+      // Save the log path to state
+      const statePath = this.getStatePath(this.sanitizeUsername(username));
+      this.writeState(statePath, state);
+    }
+
+    try {
+      // Ensure logs directory exists
+      fs.mkdirSync(path.dirname(state.logPath), { recursive: true });
+
+      const timestamp = new Date().toISOString();
+      let logEntry = `[${timestamp}] Q${questionIndex}: ${questionText}\n`;
+
+      if (userMessage) {
+        logEntry += `  Full Answer: ${userMessage}\n`;
+      }
+      if (aiResponse) {
+        logEntry += `  AI Response: ${aiResponse}\n`;
+      }
 
       if (analysisResult) {
         const { data } = analysisResult;
-
-        // Handle complex extracted values
         const extractedValueStr = typeof data.extractedValue === 'object'
           ? JSON.stringify(data.extractedValue)
           : String(data.extractedValue);
 
-        line += `  Extracted Value: ${extractedValueStr}\n`;
-        line += `  Value Type: ${data.valueType}\n`;
-        line += `  Extraction Success: ${analysisResult.success}\n`;
+        logEntry += `  Extracted Value: ${extractedValueStr}\n`;
+        logEntry += `  Value Type: ${data.valueType}\n`;
+        logEntry += `  Extraction Success: ${analysisResult.success}\n`;
 
-        // Log metadata if present
         if (data.metadata) {
           if (data.metadata.details) {
-            line += `  Details: ${data.metadata.details}\n`;
+            logEntry += `  Details: ${data.metadata.details}\n`;
           }
           if (data.metadata.amountOwed !== undefined && data.metadata.amountOwed !== null) {
-            line += `  Amount Owed: $${data.metadata.amountOwed}\n`;
+            logEntry += `  Amount Owed: $${data.metadata.amountOwed}\n`;
           }
           if (data.metadata.daysEstimate !== undefined && data.metadata.daysEstimate !== null) {
-            line += `  Days Estimate: ${data.metadata.daysEstimate}\n`;
+            logEntry += `  Days Estimate: ${data.metadata.daysEstimate}\n`;
           }
           if (data.metadata.realtorName) {
-            line += `  Realtor: ${data.metadata.realtorName}\n`;
+            logEntry += `  Realtor: ${data.metadata.realtorName}\n`;
           }
         }
 
         if (analysisResult.error) {
-          line += `  Error: ${analysisResult.error}\n`;
+          logEntry += `  Error: ${analysisResult.error}\n`;
         }
       }
-      line += "\n";
 
-      fs.appendFileSync(logPath, line, "utf8");
-      console.log(`[DEBUG] Log written to: ${logPath}`);
+      logEntry += "\n";
+
+      fs.appendFileSync(state.logPath, logEntry, "utf8");
+      console.log(`[DEBUG] Log written to: ${state.logPath}`);
     } catch (error) {
       console.error(`[ERROR] Failed to write log:`, error);
     }
@@ -185,28 +203,17 @@ export class CallerStorage {
     questionNumber?: number;
     analysisResult?: AnalysisResult;
   }) {
-    this.ensureDirs();
-
-    const username = this.sanitizeUsername(params.usernameRaw);
-    const statePath = this.getStatePath(username);
-    const state = this.readState(statePath);
-    const logPath = state.logPath ?? this.getLogPath(username);
-
-    if (!state.logPath) {
-      this.writeState(statePath, { logPath });
-    }
-
-    const qNum = params.questionNumber;
-    // const questions = params.questions ?? getQuestionTexts();
-
+    const qNum = params.questionNumber ?? -1;
     const qText =
       typeof qNum === "number" && Number.isFinite(qNum) && qNum >= 0
         ? params.questions[qNum]
         : "(unknown question)";
+
     this.appendLog(
-      logPath,
-      qNum ?? -1,
+      params.usernameRaw,
+      qNum,
       qText,
+      "",
       params.answer,
       params.analysisResult
     );

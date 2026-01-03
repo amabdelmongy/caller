@@ -6,7 +6,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 
 import { CallerStorage } from './caller.storage';
-import { analyzeAnswer, isUserAskingQuestion, detectInterestLevel } from './analyzer';
+import { analyzeAnswer, isUserAskingQuestion } from './analyzer';
 import { ConversationMemoryManager } from './conversation.memory';
 
 type ConditionalFlow = {
@@ -51,7 +51,6 @@ export class CallerService {
     temperature: 0,
   });
 
-  // Use LangChain memory manager
   private readonly memoryManager: ConversationMemoryManager;
 
   constructor() {
@@ -59,44 +58,51 @@ export class CallerService {
   }
 
   async startConversation(
-    usernameRaw: string,
-    homeowner: string,
-    agentName: string,
-    propertyAddress: string
+    usernameRaw: string
   ): Promise<string> {
     const username = this.sanitizeUsername(usernameRaw);
 
-    // Clear any existing memory for fresh start
     await this.memoryManager.clearMemory(username);
     this.storage.clearConversationState(username);
 
     const script = this.loadFullScript();
     const greeting = script.intro.greeting
-      .replace('{HOMEOWNER}', homeowner)
-      .replace('{AGENT_NAME}', agentName)
-      .replace('{PROPERTY_ADDRESS}', propertyAddress);
-
+      .replace('{HOMEOWNER}', username);
     // Initialize memory and save greeting
     this.memoryManager.getOrCreateMemory(username);
-    await this.memoryManager.addAIMessage(username, greeting);
 
-    // Set initial question index
+// Set initial question index
     this.memoryManager.updateConversationData(username, {
       currentQuestionIndex: 0,
     });
 
-    // Persist to storage
+    const firstQuestion = script.questions[0];
+    const openingMessage = `${greeting}\n\n${firstQuestion}`;
+
+    await this.memoryManager.addAIMessage(username, openingMessage);
+
+    // Log the conversation start
+    this.storage.appendLog(username, 0, firstQuestion, openingMessage, '');
+
     this.persistConversationState(username);
 
-    return greeting;
+    return openingMessage;
   }
 
-  async chat(usernameRaw: string, message: string): Promise<string> {
-    console.log(`[DEBUG] chat called - username: ${usernameRaw}, message: ${message}`);
-
+  async chat(
+    usernameRaw: string,
+    message: string
+  ): Promise<string> {
     const username = this.sanitizeUsername(usernameRaw);
 
-    // Load from storage if memory doesn't exist
+    const hasExistingConversation =
+      this.memoryManager.hasMemory(username) ||
+      this.storage.loadConversationState(username).currentQuestionIndex !== undefined;
+
+    if (!hasExistingConversation) {
+      return this.startConversation(username);
+    }
+
     if (!this.memoryManager.hasMemory(username)) {
       await this.loadConversationState(username);
     }
@@ -108,76 +114,65 @@ export class CallerService {
       throw new InternalServerErrorException('No questions configured.');
     }
 
-    // Add user message to memory
+    const convData = this.memoryManager.getConversationData(username);
+    const currentIdx = convData.currentQuestionIndex;
+    const currentQuestion = currentIdx >= 0 && currentIdx < questions.length
+      ? questions[currentIdx]
+      : '(unknown question)';
+
     await this.memoryManager.addUserMessage(username, message);
 
-    // Check if user is asking a question (handle rebuttals)
     if (isUserAskingQuestion(message)) {
-      const rebuttal = await this.handleRebuttal(username, message);
+      const rebuttal = await this.handleRebuttal(message);
       if (rebuttal) {
         await this.memoryManager.addAIMessage(username, rebuttal);
+        this.storage.appendLog(username, currentIdx, currentQuestion, rebuttal, message);
         this.persistConversationState(username);
         return rebuttal;
       }
     }
 
-    // Get conversation data
-    const convData = this.memoryManager.getConversationData(username);
-    const currentIdx = convData.currentQuestionIndex;
-    console.log(`[DEBUG] currentQuestionIndex: ${currentIdx}`);
-
-    // Analyze the answer
-    let analysisResult;
+    let analysisResult: Awaited<ReturnType<typeof analyzeAnswer>> | undefined;
     if (currentIdx >= 0 && currentIdx < questions.length) {
       const answeredQuestion = questions[currentIdx];
-      console.log(`[DEBUG] Analyzing answer for question: ${answeredQuestion}`);
       analysisResult = await analyzeAnswer(this.llm, answeredQuestion, message);
-      console.log(`[DEBUG] Analysis result:`, analysisResult);
 
-      // Store the answer
       convData.answers[`q${currentIdx}`] = message;
       this.memoryManager.updateConversationData(username, { answers: convData.answers });
 
-      // Handle conditional flows based on answer
       const conditionalResponse = await this.handleConditionalFlow(
         username,
         script,
         currentIdx,
-        message,
-        analysisResult
+        message
       );
 
       if (conditionalResponse) {
         await this.memoryManager.addAIMessage(username, conditionalResponse);
+        // Log answer with analysis and AI response together
+        this.storage.appendLog(username, currentIdx, answeredQuestion, conditionalResponse, message, analysisResult);
         this.persistConversationState(username);
         return conditionalResponse;
       }
     }
 
-    // Log the answer
-    this.storage.logAnswer({
-      usernameRaw,
-      questions,
-      answer: message,
-      questionNumber: currentIdx,
-      analysisResult,
-    });
-
-    // Get next question
     const nextIdx = this.getNextQuestionIndex(username, questions.length);
     this.memoryManager.updateConversationData(username, { currentQuestionIndex: nextIdx });
 
-    // Persist state
     this.persistConversationState(username);
 
     if (nextIdx >= questions.length) {
       const closing = script.closing.thankYou;
       await this.memoryManager.addAIMessage(username, closing);
+      // Log final answer with analysis and closing
+      this.storage.appendLog(username, currentIdx, currentQuestion, closing, message, analysisResult);
       return closing;
     }
 
     const response = await this.formatQuestion(username, nextIdx, questions[nextIdx]);
     await this.memoryManager.addAIMessage(username, response);
+    // Log answer with analysis and next question response together
+    this.storage.appendLog(username, currentIdx, currentQuestion, response, message, analysisResult);
 
     return response;
   }
@@ -186,14 +181,12 @@ export class CallerService {
     username: string,
     script: QuestionsFile,
     questionIdx: number,
-    answer: string,
-    analysisResult: any
+    answer: string
   ): Promise<string | null> {
     const convData = this.memoryManager.getConversationData(username);
     const lowerAnswer = answer.toLowerCase();
     const isNegative = /\b(no|nope|not really|never|don't think so)\b/.test(lowerAnswer);
     const isPositive = /\b(yes|yeah|sure|definitely|absolutely|maybe|possibly)\b/.test(lowerAnswer);
-
     // Q0: Have you ever considered selling?
     if (questionIdx === 0) {
       this.memoryManager.updateConversationData(username, { interestedInSelling: isPositive });
@@ -210,25 +203,21 @@ export class CallerService {
         return `${script.conditionalFlows.initialResponse.yes.followUp}\n\n${script.questions[3]}`;
       }
     }
-
     // Q1: Consider in near future?
     if (questionIdx === 1 && isNegative) {
       this.memoryManager.updateConversationData(username, { currentQuestionIndex: 2 });
       return script.conditionalFlows.initialResponse.no.noAgain ?? null;
     }
-
     // Q4: Is price negotiable?
     if (questionIdx === 4 && isPositive) {
       this.memoryManager.updateConversationData(username, { currentQuestionIndex: 5 });
       return script.conditionalFlows.priceNegotiable.yes.followUp ?? null;
     }
-
     // Q15: Property occupied by tenants?
     if (questionIdx === 15 && /\b(tenant|renter|rent)\b/.test(lowerAnswer)) {
       this.memoryManager.updateConversationData(username, { currentQuestionIndex: 16 });
       return script.conditionalFlows.tenantOccupied.yes.followUp ?? null;
     }
-
     // Q16: Monthly or annual lease?
     if (questionIdx === 16 && /\b(annual|yearly|year)\b/.test(lowerAnswer)) {
       this.memoryManager.updateConversationData(username, { currentQuestionIndex: 17 });
@@ -255,7 +244,7 @@ export class CallerService {
     return nextIdx;
   }
 
-  async handleRebuttal(username: string, userQuestion: string): Promise<string | null> {
+  private async handleRebuttal(userQuestion: string): Promise<string | null> {
     const script = this.loadFullScript();
     const lowerQuestion = userQuestion.toLowerCase();
 
@@ -274,12 +263,12 @@ export class CallerService {
       whereGotNumber: ['where did you get my number', 'how did you get'],
       whatPublicRecords: ['public records', 'what records'],
       officeAddress: ['office address', 'address'],
-      notEnoughMoney: ['not enough money', 'can\'t afford', 'don\'t have money'],
+      notEnoughMoney: ['not enough money', "can't afford", "don't have money"],
       checkInternet: ['check the internet', 'look online', 'zillow'],
     };
 
     for (const [key, keywords] of Object.entries(rebuttalMatches)) {
-      if (keywords.some(kw => lowerQuestion.includes(kw))) {
+      if (keywords.some((kw) => lowerQuestion.includes(kw))) {
         return script.rebuttals[key] ?? null;
       }
     }
@@ -346,46 +335,19 @@ ${historyContext}`
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new InternalServerErrorException(
-        `Failed to read questions.json at "${this.questionsPath}": ${msg}`,
+        `Failed to read questions.json at "${this.questionsPath}": ${msg}`
       );
     }
-  }
-
-  getReminders(): string[] {
-    return this.loadFullScript().reminders;
-  }
-
-  getClosingScript(): string {
-    return this.loadFullScript().closing.thankYou;
-  }
-
-  getIntroGreeting(homeowner: string, agentName: string, propertyAddress: string): string {
-    const script = this.loadFullScript();
-    return script.intro.greeting
-      .replace('{HOMEOWNER}', homeowner)
-      .replace('{AGENT_NAME}', agentName)
-      .replace('{PROPERTY_ADDRESS}', propertyAddress);
-  }
-
-  async clearUserContext(usernameRaw: string): Promise<void> {
-    const username = this.sanitizeUsername(usernameRaw);
-    await this.memoryManager.clearMemory(username);
-    this.storage.clearConversationState(username);
-  }
-
-  getUserAnswers(usernameRaw: string): Record<string, string> {
-    const username = this.sanitizeUsername(usernameRaw);
-    return this.memoryManager.getConversationData(username).answers;
-  }
-
-  async getConversationHistory(usernameRaw: string): Promise<string> {
-    const username = this.sanitizeUsername(usernameRaw);
-    return this.memoryManager.getHistoryString(username);
   }
 
   private sanitizeUsername(username: string): string {
     const v = (username ?? '').trim();
     if (!v) return 'anonymous';
     return v.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64);
+  }
+
+  private extractNameFromUsername(username: string): string {
+    const name = username.split(/[._-]/)[0];
+    return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
   }
 }
