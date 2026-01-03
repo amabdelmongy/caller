@@ -8,29 +8,7 @@ import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { CallerStorage } from './caller.storage';
 import { analyzeAnswer, isUserAskingQuestion } from './analyzer';
 import { ConversationMemoryManager } from './conversation.memory';
-
-type ConditionalFlow = {
-  followUp?: string;
-  noAgain?: string;
-  annual?: string;
-};
-
-type QuestionsFile = {
-  intro: { greeting: string };
-  questions: string[];
-  conditionalFlows: {
-    initialResponse: { no: ConditionalFlow; yes: ConditionalFlow };
-    priceNegotiable: { yes: ConditionalFlow };
-    tenantOccupied: { yes: ConditionalFlow };
-  };
-  rebuttals: Record<string, string>;
-  closing: {
-    thankYou: string;
-    interestScale: string;
-    interestThreshold: { low: string; high: string };
-  };
-  reminders: string[];
-};
+import { evaluateConditionalFlow, type QuestionsFile } from './caller.flow';
 
 @Injectable()
 export class CallerService {
@@ -184,53 +162,39 @@ export class CallerService {
     answer: string
   ): Promise<string | null> {
     const convData = this.memoryManager.getConversationData(username);
-    const lowerAnswer = answer.toLowerCase();
-    const isNegative = /\b(no|nope|not really|never|don't think so)\b/.test(lowerAnswer);
-    const isPositive = /\b(yes|yeah|sure|definitely|absolutely|maybe|possibly)\b/.test(lowerAnswer);
-    // Q0: Have you ever considered selling?
-    if (questionIdx === 0) {
-      this.memoryManager.updateConversationData(username, { interestedInSelling: isPositive });
 
-      if (isNegative) {
-        this.memoryManager.updateConversationData(username, { currentQuestionIndex: 1 });
-        return script.conditionalFlows.initialResponse.no.followUp ?? null;
-      } else if (isPositive) {
-        convData.skipQuestions.push(1, 2);
-        this.memoryManager.updateConversationData(username, {
-          skipQuestions: convData.skipQuestions,
-          currentQuestionIndex: 3,
-        });
-        return `${script.conditionalFlows.initialResponse.yes.followUp}\n\n${script.questions[3]}`;
-      }
-    }
-    // Q1: Consider in near future?
-    if (questionIdx === 1 && isNegative) {
-      this.memoryManager.updateConversationData(username, { currentQuestionIndex: 2 });
-      return script.conditionalFlows.initialResponse.no.noAgain ?? null;
-    }
-    // Q4: Is price negotiable?
-    if (questionIdx === 4 && isPositive) {
-      this.memoryManager.updateConversationData(username, { currentQuestionIndex: 5 });
-      return script.conditionalFlows.priceNegotiable.yes.followUp ?? null;
-    }
-    // Q15: Property occupied by tenants?
-    if (questionIdx === 15 && /\b(tenant|renter|rent)\b/.test(lowerAnswer)) {
-      this.memoryManager.updateConversationData(username, { currentQuestionIndex: 16 });
-      return script.conditionalFlows.tenantOccupied.yes.followUp ?? null;
-    }
-    // Q16: Monthly or annual lease?
-    if (questionIdx === 16 && /\b(annual|yearly|year)\b/.test(lowerAnswer)) {
-      this.memoryManager.updateConversationData(username, { currentQuestionIndex: 17 });
-      return script.conditionalFlows.tenantOccupied.yes.annual ?? null;
+    const result = evaluateConditionalFlow({
+      script,
+      questionIdx,
+      answer,
+      convData: {
+        currentQuestionIndex: convData.currentQuestionIndex,
+        answers: convData.answers,
+        skipQuestions: convData.skipQuestions,
+        interestedInSelling: convData.interestedInSelling,
+      },
+    });
+
+    if (typeof result.interestedInSelling !== 'undefined') {
+      this.memoryManager.updateConversationData(username, {
+        interestedInSelling: result.interestedInSelling,
+      });
     }
 
-    // Skip tenant questions if owner-occupied
-    if (questionIdx === 15 && /\b(me|myself|i live|owner)\b/.test(lowerAnswer)) {
-      convData.skipQuestions.push(16, 17);
-      this.memoryManager.updateConversationData(username, { skipQuestions: convData.skipQuestions });
+    if (result.skipQuestionsToAdd?.length) {
+      const merged = Array.from(
+        new Set([...(convData.skipQuestions ?? []), ...result.skipQuestionsToAdd])
+      );
+      this.memoryManager.updateConversationData(username, { skipQuestions: merged });
     }
 
-    return null;
+    if (typeof result.nextQuestionIndex === 'number') {
+      this.memoryManager.updateConversationData(username, {
+        currentQuestionIndex: result.nextQuestionIndex,
+      });
+    }
+
+    return result.response ?? null;
   }
 
   private getNextQuestionIndex(username: string, totalQuestions: number): number {
@@ -346,8 +310,4 @@ ${historyContext}`
     return v.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64);
   }
 
-  private extractNameFromUsername(username: string): string {
-    const name = username.split(/[._-]/)[0];
-    return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
-  }
 }

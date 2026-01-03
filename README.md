@@ -1,10 +1,10 @@
-# Caller API - Question Flow Chat with DeepSeek AI
+# Caller API - Question Flow Chat with AI
 
-A NestJS application that guides users through a predefined set of questions, logging answers and using DeepSeek AI for formatting.
+A NestJS application that guides users through a predefined set of questions, logging answers and using an OpenAI-compatible API for formatting.
 
 ## Features
 
-- 🤖 Integration with DeepSeek AI API via LangChain
+- 🤖 Integration with OpenAI-compatible API via LangChain
 - 📋 Configurable question flow via `questions.json`
 - 📝 Per-user answer logging to timestamped files
 - 🔢 0-based question indexing from client
@@ -15,7 +15,7 @@ A NestJS application that guides users through a predefined set of questions, lo
 
 - Node.js (v16 or higher)
 - npm or yarn
-- DeepSeek API key
+- OpenAI-compatible API key
 
 ## Setup
 
@@ -40,7 +40,9 @@ npm install @nestjs/swagger@^7 swagger-ui-express
 
 Create a `.env` file in the root directory:
 ```bash
-DEEPSEEK_API_KEY=your_actual_api_key
+MODEL=gpt-4o-mini
+API_KEY=your_actual_api_key
+BASE_URL=https://api.openai.com/v1/ (optional; omit to use OpenAI default)
 PORT=3000
 ```
 
@@ -58,7 +60,7 @@ npm run start:prod
 Once the application starts:
 1. The client sends a 0-based index to select a question
 2. The server logs answers to timestamped files
-3. DeepSeek AI formats the responses
+3. The OpenAI-compatible API formats the responses
 4. **Access API documentation** at `http://localhost:3000/swagger` (if Swagger is configured)
 
 ### Example Interaction
@@ -88,19 +90,29 @@ Call-api/
 
 - **NestJS** - Progressive Node.js framework
 - **LangChain** - Framework for developing LLM applications
-- **DeepSeek API** - AI language model
+- **OpenAI-compatible API** - AI language model
 - **TypeScript** - Type-safe JavaScript
 - **Swagger** - API documentation
+
+## Configuration
+
+- `MODEL`: Chat model name (e.g. `gpt-4o-mini`)
+- `API_KEY`: API key for your OpenAI-compatible provider
+- `BASE_URL`: Base URL for the OpenAI-compatible API (optional; omit to use OpenAI default)
+
+## Notes
+
+This service uses an OpenAI-compatible Chat Completions endpoint via LangChain (`@langchain/openai`).
 
 ## Troubleshooting
 
 ### API Key Issues
-- Ensure your DeepSeek API key is valid and properly set in `.env`
+- Ensure your API key is valid and properly set in `.env`
 - Check that the `.env` file is in the root directory
 
 ### Connection Errors
 - Verify your internet connection
-- Check if the DeepSeek API service is operational
+- Check if the OpenAI-compatible API service is operational
 
 ## Contributing
 
