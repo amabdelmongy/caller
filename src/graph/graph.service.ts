@@ -101,13 +101,34 @@ export class GraphService {
     return workflow.compile();
   }
 
-  // Generic LLM extraction method
+  // Detect user's language
+  private async detectLanguage(text: string): Promise<string> {
+    try {
+      const result = await this.llm.invoke([
+        new SystemMessage(
+          `Detect the language of the following text and return ONLY the language code (e.g., "en" for English, "ar" for Arabic, "es" for Spanish, "fr" for French).
+Return only the 2-letter language code, nothing else.`
+        ),
+        new HumanMessage(text),
+      ]);
+      return (result.content ?? "en").toString().trim().toLowerCase().slice(0, 2);
+    } catch {
+      return "en";
+    }
+  }
+
+  // Generic LLM extraction method with language support
   private async extractWithLLM(
     response: string,
     extractionPrompt: string,
-    schema: string
+    schema: string,
+    userLanguage: string = "en"
   ): Promise<ValidationResult> {
     try {
+      const languageInstruction = userLanguage !== "en"
+        ? `\n\nIMPORTANT: The "clarificationNeeded" message MUST be written in the same language as the user's response (${userLanguage}). If the user writes in Arabic, respond in Arabic. If in Spanish, respond in Spanish, etc.`
+        : "";
+
       const result = await this.llm.invoke([
         new SystemMessage(
           `You are a data extraction assistant for a real estate conversation.
@@ -123,7 +144,7 @@ Rules:
 - Return {"isValid": false, "extractedValue": null, "clarificationNeeded": "<friendly clarification request>"} if the response is unclear or doesn't answer the question
 - Be flexible with how users express themselves (slang, abbreviations, casual language)
 - If the user seems to be saying yes/no in any form, extract it
-- Always return valid JSON, nothing else`
+- Always return valid JSON, nothing else${languageInstruction}`
         ),
         new HumanMessage(`User response: "${response}"`),
       ]);
@@ -141,14 +162,18 @@ Rules:
       return {
         isValid: false,
         extractedValue: null,
-        clarificationNeeded: "I didn't quite understand that. Could you please rephrase?",
+        clarificationNeeded: userLanguage === "ar"
+          ? "لم أفهم ذلك تماماً. هل يمكنك إعادة الصياغة؟"
+          : "I didn't quite understand that. Could you please rephrase?",
       };
     } catch (error) {
       console.error("[GraphService] LLM extraction error:", error);
       return {
         isValid: false,
         extractedValue: null,
-        clarificationNeeded: "I had trouble understanding that. Could you please try again?",
+        clarificationNeeded: userLanguage === "ar"
+          ? "واجهت صعوبة في فهم ذلك. هل يمكنك المحاولة مرة أخرى؟"
+          : "I had trouble understanding that. Could you please try again?",
       };
     }
   }
@@ -412,6 +437,9 @@ The response should be meaningful (more than just "yes" or "no").`,
     }
 
     if (!state) {
+      // Detect language from first message for new conversations
+      const detectedLanguage = await this.detectLanguage(userMessage);
+
       const initialState: GraphState = {
         username,
         currentNode: "initial_interest",
@@ -426,15 +454,21 @@ The response should be meaningful (more than just "yes" or "no").`,
         isComplete: false,
         lastQuestion: QUESTIONS.initial_interest,
         lastResponse: "",
+        userLanguage: detectedLanguage, // Store detected language
       };
 
-      const aiMessage = QUESTIONS.initial_interest;
+      // Generate initial question in detected language
+      let aiMessage = QUESTIONS.initial_interest;
+      if (detectedLanguage !== "en") {
+        aiMessage = await this.translateMessage(QUESTIONS.initial_interest, detectedLanguage);
+      }
+
       initialState.messages.push({ role: "ai", content: aiMessage });
 
       this.activeStates.set(username, initialState);
       this.storage.saveGraphState(initialState);
 
-      console.log(`[GraphService] New conversation started for ${username}`);
+      console.log(`[GraphService] New conversation started for ${username} (language: ${detectedLanguage})`);
       console.log(`[GraphService] Initial question: ${aiMessage}`);
 
       return aiMessage;
@@ -442,22 +476,33 @@ The response should be meaningful (more than just "yes" or "no").`,
 
     if (state.isComplete) {
       console.log(`[GraphService] Conversation already complete for ${username}`);
-      return "The conversation has ended. Please start a new conversation.";
+      const userLanguage = (state as any).userLanguage || "en";
+      return userLanguage === "ar"
+        ? "انتهت المحادثة. يرجى بدء محادثة جديدة."
+        : "The conversation has ended. Please start a new conversation.";
     }
 
-    console.log(`[GraphService] Received message from ${username}: "${userMessage}"`);
+    // Detect/update language based on current message
+    const userLanguage = await this.detectLanguage(userMessage);
+    (state as any).userLanguage = userLanguage;
+
+    console.log(`[GraphService] Received message from ${username}: "${userMessage}" (language: ${userLanguage})`);
     console.log(`[GraphService] Current node: ${state.currentNode}`);
 
     state.messages.push({ role: "human", content: userMessage });
     state.lastResponse = userMessage;
 
     try {
-      const processorResult = await this.processCurrentNode(state.currentNode, {
-        ...state,
-        extractedAnswers: state.extractedAnswers || {},
-        nextNode: state.currentNode,
-        extractedValue: null,
-      });
+      const processorResult = await this.processCurrentNodeWithLanguage(
+        state.currentNode,
+        {
+          ...state,
+          extractedAnswers: state.extractedAnswers || {},
+          nextNode: state.currentNode,
+          extractedValue: null,
+        },
+        userLanguage
+      );
 
       const extractedValue = processorResult.extractedValue;
 
@@ -468,7 +513,8 @@ The response should be meaningful (more than just "yes" or "no").`,
 
         const clarificationMessage = await this.formatClarification(
           state,
-          extractedValue.clarification || QUESTIONS[state.currentNode]
+          extractedValue.clarification || QUESTIONS[state.currentNode],
+          userLanguage
         );
 
         this.storage.appendGraphLog(
@@ -525,7 +571,9 @@ The response should be meaningful (more than just "yes" or "no").`,
 
       if (nextNode === "end" || nextNode === "closing") {
         state.isComplete = true;
-        aiResponseMessage = "Thank you for your time. Our team will be in touch soon. Have a great day!";
+        aiResponseMessage = userLanguage === "ar"
+          ? "شكراً لوقتك. سيتواصل معك فريقنا قريباً. أتمنى لك يوماً سعيداً!"
+          : "Thank you for your time. Our team will be in touch soon. Have a great day!";
         state.messages.push({ role: "ai", content: aiResponseMessage });
         state.lastQuestion = aiResponseMessage;
 
@@ -533,7 +581,7 @@ The response should be meaningful (more than just "yes" or "no").`,
       } else {
         const nextQuestion = QUESTIONS[nextNode];
         if (nextQuestion) {
-          aiResponseMessage = await this.formatQuestion(state, nextQuestion);
+          aiResponseMessage = await this.formatQuestion(state, nextQuestion, userLanguage);
           state.messages.push({ role: "ai", content: aiResponseMessage });
           state.lastQuestion = nextQuestion;
 
@@ -541,7 +589,9 @@ The response should be meaningful (more than just "yes" or "no").`,
         } else {
           console.error(`[GraphService] No question found for node: ${nextNode}`);
           state.isComplete = true;
-          aiResponseMessage = "Thank you for your time. Our team will be in touch soon. Have a great day!";
+          aiResponseMessage = userLanguage === "ar"
+            ? "شكراً لوقتك. سيتواصل معك فريقنا قريباً. أتمنى لك يوماً سعيداً!"
+            : "Thank you for your time. Our team will be in touch soon. Have a great day!";
           state.messages.push({ role: "ai", content: aiResponseMessage });
 
           this.logConversationSummary(username, state);
@@ -624,7 +674,7 @@ The response should be meaningful (more than just "yes" or "no").`,
     }
   }
 
-  private async formatClarification(state: GraphState, clarification: string): Promise<string> {
+  private async formatClarification(state: GraphState, clarification: string, userLanguage: string = "en"): Promise<string> {
     const recentHistory = state.messages
       .slice(-2)
       .map((m) => `${m.role === "ai" ? "Agent" : "Homeowner"}: ${m.content}`)
@@ -637,10 +687,14 @@ The response should be meaningful (more than just "yes" or "no").`,
 Politely ask for clarification in a natural, conversational way.
 Be brief and friendly. Don't be repetitive.
 
+IMPORTANT: You MUST respond in the same language as the user. If the user speaks Arabic, respond in Arabic. If in English, respond in English. Match the user's language exactly.
+
+User's language: ${userLanguage}
+
 Recent conversation:
 ${recentHistory}`
         ),
-        new HumanMessage(`Ask this clarification naturally: ${clarification}`),
+        new HumanMessage(`Ask this clarification naturally (in ${userLanguage === "ar" ? "Arabic" : userLanguage === "es" ? "Spanish" : userLanguage === "fr" ? "French" : "the user's language"}): ${clarification}`),
       ]);
 
       return (response.content ?? "").toString().trim() || clarification;
@@ -714,7 +768,7 @@ ${recentHistory}`
     return state.messages[state.messages.length - 1].content;
   }
 
-  private async formatQuestion(state: GraphState, question: string): Promise<string> {
+  private async formatQuestion(state: GraphState, question: string, userLanguage: string = "en"): Promise<string> {
     if (!question) return "";
 
     const recentHistory = state.messages
@@ -728,10 +782,14 @@ ${recentHistory}`
           `You are a professional real estate caller. Ask the next question naturally, acknowledging the conversation context.
 Keep it conversational and professional. Be brief and natural.
 
+IMPORTANT: You MUST respond in the same language as the user. If the user speaks Arabic, respond in Arabic. If in English, respond in English. Match the user's language exactly.
+
+User's language: ${userLanguage}
+
 Recent conversation:
 ${recentHistory}`
         ),
-        new HumanMessage(`Ask this question naturally: ${question}`),
+        new HumanMessage(`Ask this question naturally (in ${userLanguage === "ar" ? "Arabic" : userLanguage === "es" ? "Spanish" : userLanguage === "fr" ? "French" : "the user's language"}): ${question}`),
       ]);
 
       return (response.content ?? "").toString().trim() || question;
@@ -747,5 +805,288 @@ ${recentHistory}`
 
   getConversationState(username: string): GraphState | null {
     return this.activeStates.get(username) ?? this.storage.loadGraphState(username);
+  }
+
+  // Helper to translate messages
+  private async translateMessage(message: string, targetLanguage: string): Promise<string> {
+    if (targetLanguage === "en") return message;
+
+    try {
+      const result = await this.llm.invoke([
+        new SystemMessage(
+          `Translate the following message to ${targetLanguage === "ar" ? "Arabic" : targetLanguage}.
+Keep the same tone and meaning. Return only the translation, nothing else.`
+        ),
+        new HumanMessage(message),
+      ]);
+      return (result.content ?? message).toString().trim();
+    } catch {
+      return message;
+    }
+  }
+
+  // Process node with language support
+  private async processCurrentNodeWithLanguage(
+    node: ConversationNode,
+    state: GraphStateType,
+    userLanguage: string
+  ): Promise<Partial<GraphStateType>> {
+    switch (node) {
+      case "initial_interest":
+        return this.processInitialInterestWithLang(state, userLanguage);
+      case "other_property":
+        return this.processOtherPropertyWithLang(state, userLanguage);
+      case "price_range":
+        return this.processPriceRangeWithLang(state, userLanguage);
+      case "bedrooms_bathrooms":
+        return this.processBedroomsBathroomsWithLang(state, userLanguage);
+      case "kitchen_updates":
+        return this.processKitchenUpdatesWithLang(state, userLanguage);
+      case "property_condition":
+        return this.processPropertyConditionWithLang(state, userLanguage);
+      case "occupancy":
+        return this.processOccupancyWithLang(state, userLanguage);
+      case "lease_type":
+        return this.processLeaseTypeWithLang(state, userLanguage);
+      case "lease_expiry":
+        return this.processLeaseExpiryWithLang(state, userLanguage);
+      case "selling_reason":
+        return this.processSellingReasonWithLang(state, userLanguage);
+      case "collect_email":
+        return this.processEmailWithLang(state, userLanguage);
+      case "closing":
+        return this.processClosing(state);
+      default:
+        return { extractedValue: state.lastResponse };
+    }
+  }
+
+  // Node processors with language support
+  private async processInitialInterestWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine if the user is interested in selling their property.
+Look for any indication of yes/no, interest/disinterest, willingness to sell in ANY language.
+Examples of YES (any language): "yes", "نعم", "sure", "أكيد", "I'm thinking about it", "maybe", "ممكن"
+Examples of NO (any language): "no", "لا", "not really", "مش مهتم", "no thanks"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "yes" | "no" | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return {
+        interestedInSelling: validation.extractedValue === "yes",
+        extractedValue: validation.extractedValue,
+      };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processOtherPropertyWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine if the user has another property they might be interested in selling.
+Understand responses in any language.`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "yes" | "no" | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return {
+        hasOtherProperty: validation.extractedValue === "yes",
+        extractedValue: validation.extractedValue,
+      };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processPriceRangeWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the price range or price expectation for the property.
+Handle various formats and languages. Convert all prices to numbers.
+Handle "not sure" responses in any language.`,
+      `{
+  "isValid": boolean,
+  "extractedValue": {
+    "min": number | null,
+    "max": number | null,
+    "raw": string,
+    "status": "specified" | "not_sure"
+  } | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processBedroomsBathroomsWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the number of bedrooms and bathrooms.
+Handle various formats and languages (e.g., "3 غرف نوم و 2 حمام" in Arabic).`,
+      `{
+  "isValid": boolean,
+  "extractedValue": {
+    "bedrooms": number | null,
+    "bathrooms": number | null,
+    "raw": string
+  } | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processKitchenUpdatesWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine if the kitchen has been updated/renovated. Understand responses in any language.`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "yes" | "no" | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processPropertyConditionWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the property condition rating on a scale of 1-10.
+Handle descriptive responses in any language and convert to scale.`,
+      `{
+  "isValid": boolean,
+  "extractedValue": number (1-10) | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processOccupancyWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine who currently occupies the property. Understand responses in any language.
+Categories: "tenant", "owner", "vacant"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "tenant" | "owner" | "vacant" | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      const isTenant = validation.extractedValue === "tenant";
+      return { isTenantOccupied: isTenant, extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processLeaseTypeWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine the type of lease agreement. Understand responses in any language.
+- "annual": yearly lease
+- "monthly": month-to-month`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "annual" | "monthly" | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      const isAnnual = validation.extractedValue === "annual";
+      return { isAnnualLease: isAnnual, extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processLeaseExpiryWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract when the lease expires. Accept various formats and languages.`,
+      `{
+  "isValid": boolean,
+  "extractedValue": string (the expiry date/timeframe) | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processSellingReasonWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the reason for selling the property. Accept any language.`,
+      `{
+  "isValid": boolean,
+  "extractedValue": string (the reason) | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
+  }
+
+  private async processEmailWithLang(state: GraphStateType, lang: string): Promise<Partial<GraphStateType>> {
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the email address from the response.
+- If a valid email is provided, extract it
+- If the user declines (in any language), return "declined"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": string (email address or "declined") | null,
+  "clarificationNeeded": string (optional, in the user's language)
+}`,
+      lang
+    );
+
+    if (validation.isValid) {
+      return { email: validation.extractedValue, extractedValue: validation.extractedValue };
+    }
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
   }
 }

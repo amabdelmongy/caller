@@ -28,6 +28,7 @@ export interface GraphState {
   isComplete: boolean;
   lastQuestion: string;
   lastResponse: string;
+  userLanguage?: string; // Add this field
 }
 
 export interface GraphLogEntry {
