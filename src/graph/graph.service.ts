@@ -342,6 +342,26 @@ export class GraphService {
     const priceResult = this.extractPriceRange(response);
 
     if (priceResult.min !== null || priceResult.max !== null) {
+      // Validate minimum price of $10,000
+      const minPrice = priceResult.min ?? priceResult.max;
+      const maxPrice = priceResult.max ?? priceResult.min;
+
+      if (minPrice !== null && minPrice < 10000) {
+        return {
+          isValid: false,
+          extractedValue: null,
+          clarificationNeeded: "The price seems a bit low. Could you provide a price of at least $10,000?"
+        };
+      }
+
+      if (maxPrice !== null && maxPrice < 10000) {
+        return {
+          isValid: false,
+          extractedValue: null,
+          clarificationNeeded: "The price seems a bit low. Could you provide a price of at least $10,000?"
+        };
+      }
+
       return {
         isValid: true,
         extractedValue: priceResult
@@ -374,6 +394,13 @@ export class GraphService {
       if (match) {
         result.bedrooms = parseInt(match[1], 10);
         result.bathrooms = parseFloat(match[2]);
+
+        // Validate maximum values
+        const validationError = this.validateBedroomBathroomLimits(result.bedrooms, result.bathrooms);
+        if (validationError) {
+          return validationError;
+        }
+
         return { isValid: true, extractedValue: result };
       }
     }
@@ -391,6 +418,12 @@ export class GraphService {
     }
 
     if (result.bedrooms !== null || result.bathrooms !== null) {
+      // Validate maximum values
+      const validationError = this.validateBedroomBathroomLimits(result.bedrooms, result.bathrooms);
+      if (validationError) {
+        return validationError;
+      }
+
       return { isValid: true, extractedValue: result };
     }
 
@@ -399,6 +432,13 @@ export class GraphService {
     if (numbers && numbers.length >= 2) {
       result.bedrooms = parseInt(numbers[0], 10);
       result.bathrooms = parseFloat(numbers[1]);
+
+      // Validate maximum values
+      const validationError = this.validateBedroomBathroomLimits(result.bedrooms, result.bathrooms);
+      if (validationError) {
+        return validationError;
+      }
+
       return { isValid: true, extractedValue: result };
     }
 
@@ -407,6 +447,42 @@ export class GraphService {
       extractedValue: null,
       clarificationNeeded: "Could you tell me how many bedrooms and bathrooms the property has? For example, '3 bedrooms and 2 bathrooms'."
     };
+  }
+
+  private validateBedroomBathroomLimits(bedrooms: number | null, bathrooms: number | null): ValidationResult | null {
+    if (bedrooms !== null && bedrooms > 10) {
+      return {
+        isValid: false,
+        extractedValue: null,
+        clarificationNeeded: "That seems like a lot of bedrooms. Could you confirm the number? We typically see properties with up to 10 bedrooms."
+      };
+    }
+
+    if (bedrooms !== null && bedrooms < 0) {
+      return {
+        isValid: false,
+        extractedValue: null,
+        clarificationNeeded: "The number of bedrooms should be a positive number. How many bedrooms does the property have?"
+      };
+    }
+
+    if (bathrooms !== null && bathrooms > 10) {
+      return {
+        isValid: false,
+        extractedValue: null,
+        clarificationNeeded: "That seems like a lot of bathrooms. Could you confirm the number? We typically see properties with up to 10 bathrooms."
+      };
+    }
+
+    if (bathrooms !== null && bathrooms < 0) {
+      return {
+        isValid: false,
+        extractedValue: null,
+        clarificationNeeded: "The number of bathrooms should be a positive number. How many bathrooms does the property have?"
+      };
+    }
+
+    return null; // No validation errors
   }
 
   private validateScale(response: string): ValidationResult {
