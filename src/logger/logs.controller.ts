@@ -1,10 +1,10 @@
 import { Controller, Get, Param, NotFoundException, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import { CallerStorage } from './caller.storage';
+import { CallerStorage } from '../caller/caller.storage';
 
 @Controller('logs')
 export class LogsController {
-  private readonly storage = new CallerStorage(process.env.CALLER_DIR ?? __dirname);
+  private readonly storage = new CallerStorage();
 
   @Get()
   list() {

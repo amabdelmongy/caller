@@ -14,9 +14,11 @@ export class CallerStorage {
   private readonly logsDir: string;
   private readonly stateDir: string;
 
-  constructor(private readonly baseDir: string) {
-    this.logsDir = path.join(this.baseDir, "logs");
-    this.stateDir = path.join(this.baseDir, "state");
+  constructor( ) {
+
+    var baseDir =  process.env.CALLER_LOG_DIR ?? "./data/logs";
+    this.logsDir = path.join(baseDir, "logs");
+    this.stateDir = path.join(baseDir, "state");
   }
 
   ensureDirs() {
@@ -190,7 +192,7 @@ export class CallerStorage {
       logEntry += "\n";
 
       fs.appendFileSync(state.logPath, logEntry, "utf8");
-      console.log(`[DEBUG] Log written to: ${state.logPath}`);
+      console.log(logEntry);
     } catch (error) {
       console.error(`[ERROR] Failed to write log:`, error);
     }

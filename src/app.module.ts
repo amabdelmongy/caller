@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CallerModule } from './caller/caller.module';
-import { LogsController } from './caller/logs.controller';
+import { LogsController } from './logger/logs.controller';
 import { HealthController } from './health/health.controller';
 
 import { ServeStaticModule } from '@nestjs/serve-static';

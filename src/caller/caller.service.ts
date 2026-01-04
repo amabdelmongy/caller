@@ -18,9 +18,7 @@ export class CallerService {
   private readonly questionsPath =
     process.env.QUESTIONS_PATH ?? path.resolve(this.callerDir, 'questions.json');
 
-  private readonly storage = new CallerStorage(
-    process.env.CALLER_DIR ?? path.resolve(__dirname)
-  );
+  private readonly storage = new CallerStorage();
 
   private readonly llm = new ChatOpenAI({
     model: process.env.MODEL,
