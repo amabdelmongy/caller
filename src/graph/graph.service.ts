@@ -42,21 +42,6 @@ interface ValidationResult {
   clarificationNeeded?: string;
 }
 
-// Add interface for price extraction result
-interface PriceExtractionResult {
-  raw: string;
-  min: number | null;
-  max: number | null;
-  currency: string;
-}
-
-// Add interface for bedrooms/bathrooms extraction
-interface BedroomsBathroomsResult {
-  bedrooms: number | null;
-  bathrooms: number | null;
-  raw: string;
-}
-
 @Injectable()
 export class GraphService {
   private readonly llm: ChatOpenAI;
@@ -74,7 +59,6 @@ export class GraphService {
 
   private buildGraph() {
     const workflow = new StateGraph(GraphStateAnnotation)
-      // Add all nodes
       .addNode("initial_interest", this.processInitialInterest.bind(this))
       .addNode("other_property", this.processOtherProperty.bind(this))
       .addNode("price_range", this.processPriceRange.bind(this))
@@ -87,37 +71,28 @@ export class GraphService {
       .addNode("selling_reason", this.processSellingReason.bind(this))
       .addNode("collect_email", this.processEmail.bind(this))
       .addNode("closing", this.processClosing.bind(this))
-
-      // Add edges from START
       .addEdge(START, "initial_interest")
-
-      // Add conditional edges based on node outcomes
       .addConditionalEdges("initial_interest", (state) => {
         if (state.interestedInSelling === true) return "price_range";
         if (state.interestedInSelling === false) return "other_property";
-        return "initial_interest"; // Ask again if unclear
+        return "initial_interest";
       })
-
       .addConditionalEdges("other_property", (state) => {
         if (state.hasOtherProperty === true) return "price_range";
         return "closing";
       })
-
       .addEdge("price_range", "bedrooms_bathrooms")
       .addEdge("bedrooms_bathrooms", "kitchen_updates")
       .addEdge("kitchen_updates", "property_condition")
       .addEdge("property_condition", "occupancy")
-
       .addConditionalEdges("occupancy", (state) => {
         if (state.isTenantOccupied === true) return "lease_type";
         return "selling_reason";
       })
-
       .addConditionalEdges("lease_type", (state) => {
         if (state.isAnnualLease === true) return "lease_expiry";
         return "selling_reason";
       })
-
       .addEdge("lease_expiry", "selling_reason")
       .addEdge("selling_reason", "collect_email")
       .addEdge("collect_email", "closing")
@@ -126,31 +101,124 @@ export class GraphService {
     return workflow.compile();
   }
 
-  // Node processors with validation
+  // Generic LLM extraction method
+  private async extractWithLLM(
+    response: string,
+    extractionPrompt: string,
+    schema: string
+  ): Promise<ValidationResult> {
+    try {
+      const result = await this.llm.invoke([
+        new SystemMessage(
+          `You are a data extraction assistant for a real estate conversation.
+Extract structured data from user responses and return ONLY valid JSON.
+
+${extractionPrompt}
+
+Expected JSON schema:
+${schema}
+
+Rules:
+- Return {"isValid": true, "extractedValue": <extracted_data>} if you can extract the information
+- Return {"isValid": false, "extractedValue": null, "clarificationNeeded": "<friendly clarification request>"} if the response is unclear or doesn't answer the question
+- Be flexible with how users express themselves (slang, abbreviations, casual language)
+- If the user seems to be saying yes/no in any form, extract it
+- Always return valid JSON, nothing else`
+        ),
+        new HumanMessage(`User response: "${response}"`),
+      ]);
+
+      const content = (result.content ?? "").toString().trim();
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          isValid: parsed.isValid ?? false,
+          extractedValue: parsed.extractedValue ?? null,
+          clarificationNeeded: parsed.clarificationNeeded,
+        };
+      }
+      return {
+        isValid: false,
+        extractedValue: null,
+        clarificationNeeded: "I didn't quite understand that. Could you please rephrase?",
+      };
+    } catch (error) {
+      console.error("[GraphService] LLM extraction error:", error);
+      return {
+        isValid: false,
+        extractedValue: null,
+        clarificationNeeded: "I had trouble understanding that. Could you please try again?",
+      };
+    }
+  }
+
+  // Node processors using LLM extraction
   private async processInitialInterest(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateYesNo(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine if the user is interested in selling their property.
+Look for any indication of yes/no, interest/disinterest, willingness to sell.
+Examples of YES: "yes", "sure", "I'm thinking about it", "maybe", "I might be", "possibly", "I've been considering it"
+Examples of NO: "no", "not really", "not interested", "no thanks", "I'm not selling"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "yes" | "no" | null,
+  "clarificationNeeded": string (optional, only if isValid is false)
+}`
+    );
+
     if (validation.isValid) {
       return {
         interestedInSelling: validation.extractedValue === "yes",
-        extractedValue: validation.extractedValue
+        extractedValue: validation.extractedValue,
       };
     }
     return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
   }
 
   private async processOtherProperty(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateYesNo(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine if the user has another property they might be interested in selling.
+Look for any indication of yes/no regarding owning other properties.
+Examples of YES: "yes", "I have another one", "I own a few", "there's my rental property"
+Examples of NO: "no", "just this one", "that's my only property", "nope"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "yes" | "no" | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return {
         hasOtherProperty: validation.extractedValue === "yes",
-        extractedValue: validation.extractedValue
+        extractedValue: validation.extractedValue,
       };
     }
     return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
   }
 
   private async processPriceRange(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validatePriceRange(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the price range or price expectation for the property.
+Handle various formats: "$200k", "200000", "200 thousand", "around 300k", "between 200 and 300 thousand", "1.5 million", "1.5m"
+Also handle: "not sure", "don't know", "need to think about it" as valid but uncertain responses.
+Convert all prices to numbers (e.g., "200k" = 200000, "1.5m" = 1500000)`,
+      `{
+  "isValid": boolean,
+  "extractedValue": {
+    "min": number | null,
+    "max": number | null,
+    "raw": string,
+    "status": "specified" | "not_sure"
+  } | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return { extractedValue: validation.extractedValue };
     }
@@ -158,7 +226,22 @@ export class GraphService {
   }
 
   private async processBedroomsBathrooms(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateBedroomsBathrooms(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the number of bedrooms and bathrooms.
+Handle various formats: "3 bed 2 bath", "3/2", "three bedrooms two bathrooms", "3 bedrooms and 2.5 baths", "it's a 3/2"
+Half bathrooms are valid (e.g., 2.5 bathrooms)`,
+      `{
+  "isValid": boolean,
+  "extractedValue": {
+    "bedrooms": number | null,
+    "bathrooms": number | null,
+    "raw": string
+  } | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return { extractedValue: validation.extractedValue };
     }
@@ -166,7 +249,18 @@ export class GraphService {
   }
 
   private async processKitchenUpdates(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateYesNo(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine if the kitchen has been updated/renovated.
+Examples of YES: "yes", "we renovated it", "it's new", "updated last year", "brand new kitchen"
+Examples of NO: "no", "it's original", "needs work", "hasn't been touched", "it's outdated"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "yes" | "no" | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return { extractedValue: validation.extractedValue };
     }
@@ -174,7 +268,25 @@ export class GraphService {
   }
 
   private async processPropertyCondition(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateScale(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the property condition rating on a scale of 1-10.
+Handle numeric responses: "8", "about a 7", "I'd say 6"
+Handle descriptive responses and convert to scale:
+- "excellent", "perfect", "like new" = 9-10
+- "great", "very good" = 8
+- "good" = 7
+- "decent", "okay", "fair", "average" = 5-6
+- "needs work", "needs some repairs" = 4
+- "poor", "bad" = 2-3
+- "terrible", "very bad" = 1`,
+      `{
+  "isValid": boolean,
+  "extractedValue": number (1-10) | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return { extractedValue: validation.extractedValue };
     }
@@ -182,7 +294,20 @@ export class GraphService {
   }
 
   private async processOccupancy(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateOccupancy(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine who currently occupies the property.
+Categories:
+- "tenant": renters, tenants, someone renting it, leased out
+- "owner": owner-occupied, I live there, we live there, it's my home
+- "vacant": empty, no one, vacant, unoccupied`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "tenant" | "owner" | "vacant" | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       const isTenant = validation.extractedValue === "tenant";
       return { isTenantOccupied: isTenant, extractedValue: validation.extractedValue };
@@ -191,7 +316,18 @@ export class GraphService {
   }
 
   private async processLeaseType(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateLeaseType(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Determine the type of lease agreement.
+- "annual": yearly lease, 12-month lease, one year, annual agreement
+- "monthly": month-to-month, MTM, monthly basis, no fixed term`,
+      `{
+  "isValid": boolean,
+  "extractedValue": "annual" | "monthly" | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       const isAnnual = validation.extractedValue === "annual";
       return { isAnnualLease: isAnnual, extractedValue: validation.extractedValue };
@@ -200,7 +336,20 @@ export class GraphService {
   }
 
   private async processLeaseExpiry(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateDate(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract when the lease expires.
+Accept various formats:
+- Dates: "March 2024", "3/15/24", "next month"
+- Relative: "in 3 months", "end of year", "6 months from now"
+- Approximate: "sometime next year", "around summer"`,
+      `{
+  "isValid": boolean,
+  "extractedValue": string (the expiry date/timeframe) | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return { extractedValue: validation.extractedValue };
     }
@@ -208,15 +357,38 @@ export class GraphService {
   }
 
   private async processSellingReason(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    // Accept any non-empty response for selling reason
-    if (state.lastResponse.trim().length > 2) {
-      return { extractedValue: state.lastResponse };
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the reason for selling the property.
+Accept any reasonable explanation: relocating, downsizing, upgrading, financial reasons, investment, inheritance, divorce, retirement, etc.
+The response should be meaningful (more than just "yes" or "no").`,
+      `{
+  "isValid": boolean,
+  "extractedValue": string (the reason) | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
+    if (validation.isValid) {
+      return { extractedValue: validation.extractedValue };
     }
-    return { extractedValue: { unclear: true, clarification: "Could you tell me more about why you're considering selling?" } };
+    return { extractedValue: { unclear: true, clarification: validation.clarificationNeeded } };
   }
 
   private async processEmail(state: GraphStateType): Promise<Partial<GraphStateType>> {
-    const validation = this.validateEmail(state.lastResponse);
+    const validation = await this.extractWithLLM(
+      state.lastResponse,
+      `Extract the email address from the response.
+- If a valid email is provided, extract it
+- If the user declines ("no", "prefer not to", "skip", "don't have one"), return "declined"
+- The email should be in standard format: something@domain.com`,
+      `{
+  "isValid": boolean,
+  "extractedValue": string (email address or "declined") | null,
+  "clarificationNeeded": string (optional)
+}`
+    );
+
     if (validation.isValid) {
       return { email: validation.extractedValue, extractedValue: validation.extractedValue };
     }
@@ -227,372 +399,8 @@ export class GraphService {
     return { isComplete: true, extractedValue: state.lastResponse };
   }
 
-  // Validation helper methods
-  private validateYesNo(response: string): ValidationResult {
-    const userMessage = response.toLowerCase().trim();
-    const isYes = /\b(yes|yeah|sure|definitely|absolutely|yep|yup|correct|right|true|i do|i am|i have)\b/i.test(userMessage);
-    const isNo = /\b(no|nope|not really|never|nah|negative|i don't|i haven't|not yet)\b/i.test(userMessage);
+  // ...existing code for chat, formatClarification, formatQuestion, determineNextNode, etc...
 
-    if (isYes) return { isValid: true, extractedValue: "yes" };
-    if (isNo) return { isValid: true, extractedValue: "no" };
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "I didn't quite catch that. Could you please answer with yes or no?"
-    };
-  }
-
-  private parsePriceToNumber(priceStr: string): number | null {
-    if (!priceStr) return null;
-
-    // Remove currency symbols, commas, and whitespace
-    let cleaned = priceStr.replace(/[$,\s]/g, '').toLowerCase();
-
-    // Handle 'k' suffix (e.g., "200k" -> 200000)
-    if (cleaned.endsWith('k')) {
-      const num = parseFloat(cleaned.slice(0, -1));
-      return isNaN(num) ? null : num * 1000;
-    }
-
-    // Handle 'm' or 'million' suffix (e.g., "1.5m" -> 1500000)
-    if (cleaned.endsWith('m') || cleaned.includes('million')) {
-      cleaned = cleaned.replace('million', '').replace('m', '');
-      const num = parseFloat(cleaned);
-      return isNaN(num) ? null : num * 1000000;
-    }
-
-    // Handle 'thousand' suffix
-    if (cleaned.includes('thousand')) {
-      cleaned = cleaned.replace('thousand', '');
-      const num = parseFloat(cleaned);
-      return isNaN(num) ? null : num * 1000;
-    }
-
-    const num = parseFloat(cleaned);
-    return isNaN(num) ? null : num;
-  }
-
-  private extractPriceRange(response: string): PriceExtractionResult {
-    const result: PriceExtractionResult = {
-      raw: response,
-      min: null,
-      max: null,
-      currency: 'USD'
-    };
-
-    // Pattern for range: "$200k - $300k", "200000 to 300000", "between 200k and 300k"
-    const rangePatterns = [
-      /\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:k|K|thousand|m|M|million)?\s*(?:-|to|and)\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:k|K|thousand|m|M|million)?/i,
-      /between\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:k|K|thousand|m|M|million)?\s*(?:and|to)\s*\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:k|K|thousand|m|M|million)?/i,
-    ];
-
-    for (const pattern of rangePatterns) {
-      const match = response.match(pattern);
-      if (match) {
-        // Get the suffixes for each number
-        const fullMatch = match[0];
-        const firstPart = fullMatch.substring(0, fullMatch.search(/(-|to|and)/i));
-        const secondPart = fullMatch.substring(fullMatch.search(/(-|to|and)/i));
-
-        result.min = this.parsePriceToNumber(firstPart);
-        result.max = this.parsePriceToNumber(secondPart);
-        return result;
-      }
-    }
-
-    // Pattern for single price: "$200k", "200000", "around 300k"
-    const singlePatterns = [
-      /\$?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:k|K|thousand)?/,
-      /\$?\s*(\d+)\s*(?:k|K|thousand)/,
-      /(\d{1,3}(?:,\d{3})*)\s*(?:dollars?)?/,
-      /(?:around|about|approximately|roughly)\s*\$?\s*(\d+)\s*(?:k|K|thousand|m|M|million)?/i,
-    ];
-
-    for (const pattern of singlePatterns) {
-      const match = response.match(pattern);
-      if (match) {
-        const price = this.parsePriceToNumber(match[0]);
-        if (price !== null) {
-          result.min = price;
-          result.max = price;
-          return result;
-        }
-      }
-    }
-
-    return result;
-  }
-
-  private validatePriceRange(response: string): ValidationResult {
-    // Check if they're unsure first
-    if (/\b(not sure|don't know|no idea|unsure|haven't decided)\b/i.test(response)) {
-      return {
-        isValid: true,
-        extractedValue: {
-          raw: response,
-          min: null,
-          max: null,
-          currency: 'USD',
-          status: 'not_sure'
-        }
-      };
-    }
-
-    const priceResult = this.extractPriceRange(response);
-
-    if (priceResult.min !== null || priceResult.max !== null) {
-      // Validate minimum price of $10,000
-      const minPrice = priceResult.min ?? priceResult.max;
-      const maxPrice = priceResult.max ?? priceResult.min;
-
-      if (minPrice !== null && minPrice < 10000) {
-        return {
-          isValid: false,
-          extractedValue: null,
-          clarificationNeeded: "The price seems a bit low. Could you provide a price of at least $10,000?"
-        };
-      }
-
-      if (maxPrice !== null && maxPrice < 10000) {
-        return {
-          isValid: false,
-          extractedValue: null,
-          clarificationNeeded: "The price seems a bit low. Could you provide a price of at least $10,000?"
-        };
-      }
-
-      return {
-        isValid: true,
-        extractedValue: priceResult
-      };
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "Could you give me a rough price range you have in mind? For example, $200,000 or around $300k?"
-    };
-  }
-
-  private validateBedroomsBathrooms(response: string): ValidationResult {
-    const result: BedroomsBathroomsResult = {
-      bedrooms: null,
-      bathrooms: null,
-      raw: response
-    };
-
-    // Match patterns like "3 bed 2 bath", "3 bedrooms 2 bathrooms", "3/2", "3 and 2"
-    const patterns = [
-      /(\d+)\s*(?:bed(?:room)?s?|br)\s*(?:and|,|\/|\s)\s*(\d+(?:\.\d+)?)\s*(?:bath(?:room)?s?|ba)/i,
-      /(\d+)\s*\/\s*(\d+(?:\.\d+)?)/,
-      /(\d+)\s+(\d+(?:\.\d+)?)/,
-    ];
-
-    for (const pattern of patterns) {
-      const match = response.match(pattern);
-      if (match) {
-        result.bedrooms = parseInt(match[1], 10);
-        result.bathrooms = parseFloat(match[2]);
-
-        // Validate maximum values
-        const validationError = this.validateBedroomBathroomLimits(result.bedrooms, result.bathrooms);
-        if (validationError) {
-          return validationError;
-        }
-
-        return { isValid: true, extractedValue: result };
-      }
-    }
-
-    // Try to match just bedrooms
-    const bedroomMatch = response.match(/(\d+)\s*(?:bed(?:room)?s?|br)/i);
-    if (bedroomMatch) {
-      result.bedrooms = parseInt(bedroomMatch[1], 10);
-    }
-
-    // Try to match just bathrooms
-    const bathroomMatch = response.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:room)?s?|ba)/i);
-    if (bathroomMatch) {
-      result.bathrooms = parseFloat(bathroomMatch[1]);
-    }
-
-    if (result.bedrooms !== null || result.bathrooms !== null) {
-      // Validate maximum values
-      const validationError = this.validateBedroomBathroomLimits(result.bedrooms, result.bathrooms);
-      if (validationError) {
-        return validationError;
-      }
-
-      return { isValid: true, extractedValue: result };
-    }
-
-    // Try simple number extraction if format mentions beds/baths context
-    const numbers = response.match(/\d+(?:\.\d+)?/g);
-    if (numbers && numbers.length >= 2) {
-      result.bedrooms = parseInt(numbers[0], 10);
-      result.bathrooms = parseFloat(numbers[1]);
-
-      // Validate maximum values
-      const validationError = this.validateBedroomBathroomLimits(result.bedrooms, result.bathrooms);
-      if (validationError) {
-        return validationError;
-      }
-
-      return { isValid: true, extractedValue: result };
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "Could you tell me how many bedrooms and bathrooms the property has? For example, '3 bedrooms and 2 bathrooms'."
-    };
-  }
-
-  private validateBedroomBathroomLimits(bedrooms: number | null, bathrooms: number | null): ValidationResult | null {
-    if (bedrooms !== null && bedrooms > 10) {
-      return {
-        isValid: false,
-        extractedValue: null,
-        clarificationNeeded: "That seems like a lot of bedrooms. Could you confirm the number? We typically see properties with up to 10 bedrooms."
-      };
-    }
-
-    if (bedrooms !== null && bedrooms < 0) {
-      return {
-        isValid: false,
-        extractedValue: null,
-        clarificationNeeded: "The number of bedrooms should be a positive number. How many bedrooms does the property have?"
-      };
-    }
-
-    if (bathrooms !== null && bathrooms > 10) {
-      return {
-        isValid: false,
-        extractedValue: null,
-        clarificationNeeded: "That seems like a lot of bathrooms. Could you confirm the number? We typically see properties with up to 10 bathrooms."
-      };
-    }
-
-    if (bathrooms !== null && bathrooms < 0) {
-      return {
-        isValid: false,
-        extractedValue: null,
-        clarificationNeeded: "The number of bathrooms should be a positive number. How many bathrooms does the property have?"
-      };
-    }
-
-    return null; // No validation errors
-  }
-
-  private validateScale(response: string): ValidationResult {
-    const scaleMatch = response.match(/\b([1-9]|10)\b/);
-    if (scaleMatch) {
-      return { isValid: true, extractedValue: parseInt(scaleMatch[1]) };
-    }
-
-    // Handle word descriptions
-    const conditionWords: Record<string, number> = {
-      'excellent': 10, 'perfect': 10, 'great': 9, 'very good': 8,
-      'good': 7, 'decent': 6, 'okay': 5, 'ok': 5, 'fair': 5,
-      'average': 5, 'needs work': 4, 'poor': 3, 'bad': 2, 'terrible': 1
-    };
-
-    const lowerResponse = response.toLowerCase();
-    for (const [word, value] of Object.entries(conditionWords)) {
-      if (lowerResponse.includes(word)) {
-        return { isValid: true, extractedValue: value };
-      }
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "Could you rate the condition on a scale of 1 to 10, where 10 is excellent and 1 is poor?"
-    };
-  }
-
-  private validateOccupancy(response: string): ValidationResult {
-    const lowerResponse = response.toLowerCase();
-
-    if (/\b(tenant|renter|rent|leased|renting)\b/i.test(lowerResponse)) {
-      return { isValid: true, extractedValue: "tenant" };
-    }
-    if (/\b(owner|myself|me|i live|we live|occupied by me|my home|vacant|empty)\b/i.test(lowerResponse)) {
-      return { isValid: true, extractedValue: "owner" };
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "Is the property currently occupied by you, or do you have tenants renting it?"
-    };
-  }
-
-  private validateLeaseType(response: string): ValidationResult {
-    const lowerResponse = response.toLowerCase();
-
-    if (/\b(annual|year|yearly|12 month|one year)\b/i.test(lowerResponse)) {
-      return { isValid: true, extractedValue: "annual" };
-    }
-    if (/\b(month|monthly|month-to-month|mtm)\b/i.test(lowerResponse)) {
-      return { isValid: true, extractedValue: "monthly" };
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "Is it an annual lease or a month-to-month arrangement?"
-    };
-  }
-
-  private validateDate(response: string): ValidationResult {
-    // Match various date formats
-    const datePatterns = [
-      /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/,
-      /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{1,2}?,?\s*\d{2,4}?\b/i,
-      /\b(\d{1,2})\s*(months?|weeks?|days?)\b/i,
-      /\b(next month|next year|end of year|soon)\b/i,
-    ];
-
-    for (const pattern of datePatterns) {
-      const match = response.match(pattern);
-      if (match) {
-        return { isValid: true, extractedValue: match[0] };
-      }
-    }
-
-    // Accept general timeframe responses
-    if (response.trim().length > 2) {
-      return { isValid: true, extractedValue: response };
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "When does the current lease expire? You can give me a date or approximate timeframe."
-    };
-  }
-
-  private validateEmail(response: string): ValidationResult {
-    const emailMatch = response.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-    if (emailMatch) {
-      return { isValid: true, extractedValue: emailMatch[0] };
-    }
-
-    // Check if they declined to provide email
-    if (/\b(no|none|don't have|prefer not|skip)\b/i.test(response.toLowerCase())) {
-      return { isValid: true, extractedValue: "declined" };
-    }
-
-    return {
-      isValid: false,
-      extractedValue: null,
-      clarificationNeeded: "Could you please provide a valid email address? For example, yourname@example.com"
-    };
-  }
-
-  // Update the chat method to handle unclear responses
   async chat(username: string, userMessage: string): Promise<string> {
     let state = this.activeStates.get(username);
 
@@ -603,14 +411,13 @@ export class GraphService {
       }
     }
 
-    // If no state exists, start a new conversation
     if (!state) {
       const initialState: GraphState = {
         username,
         currentNode: "initial_interest",
         messages: [],
         answers: {},
-        extractedAnswers: {}, // Initialize extracted answers
+        extractedAnswers: {},
         interestedInSelling: null,
         hasOtherProperty: null,
         isTenantOccupied: null,
@@ -627,7 +434,6 @@ export class GraphService {
       this.activeStates.set(username, initialState);
       this.storage.saveGraphState(initialState);
 
-      // Log the initial question
       console.log(`[GraphService] New conversation started for ${username}`);
       console.log(`[GraphService] Initial question: ${aiMessage}`);
 
@@ -639,16 +445,13 @@ export class GraphService {
       return "The conversation has ended. Please start a new conversation.";
     }
 
-    // Log incoming message
     console.log(`[GraphService] Received message from ${username}: "${userMessage}"`);
     console.log(`[GraphService] Current node: ${state.currentNode}`);
 
-    // Add user message to history
     state.messages.push({ role: "human", content: userMessage });
     state.lastResponse = userMessage;
 
     try {
-      // Process the current node directly instead of invoking the full graph
       const processorResult = await this.processCurrentNode(state.currentNode, {
         ...state,
         extractedAnswers: state.extractedAnswers || {},
@@ -658,28 +461,24 @@ export class GraphService {
 
       const extractedValue = processorResult.extractedValue;
 
-      // Log the extraction result
       console.log(`[GraphService] Extracted value for ${state.currentNode}:`, JSON.stringify(extractedValue));
 
-      // Check if the response was unclear and needs re-asking
-      if (extractedValue && typeof extractedValue === 'object' && extractedValue.unclear) {
+      if (extractedValue && typeof extractedValue === "object" && extractedValue.unclear) {
         console.log(`[GraphService] Unclear response, asking for clarification`);
 
-        // Don't advance to next node, re-ask with clarification
         const clarificationMessage = await this.formatClarification(
           state,
           extractedValue.clarification || QUESTIONS[state.currentNode]
         );
 
-        // Log the unclear response to file WITH the AI response
         this.storage.appendGraphLog(
           username,
           state.currentNode,
           QUESTIONS[state.currentNode],
           userMessage,
           { unclear: true, originalResponse: userMessage, clarification: extractedValue.clarification },
-          state.currentNode, // stays on same node
-          clarificationMessage // AI response
+          state.currentNode,
+          clarificationMessage
         );
 
         state.messages.push({ role: "ai", content: clarificationMessage });
@@ -690,7 +489,6 @@ export class GraphService {
         return clarificationMessage;
       }
 
-      // Merge processor result into state
       const updatedState = {
         ...state,
         interestedInSelling: processorResult.interestedInSelling ?? state.interestedInSelling,
@@ -700,33 +498,27 @@ export class GraphService {
         email: processorResult.email ?? state.email,
       };
 
-      // Determine next node from result
       const previousNode = state.currentNode;
       const nextNode = this.determineNextNode(state.currentNode, updatedState as any);
       const extractedValueFinal = processorResult.extractedValue;
 
-      // Save answer for the CURRENT node (before updating)
       state.answers[previousNode] = userMessage;
 
-      // Save extracted value separately
       if (!state.extractedAnswers) {
         state.extractedAnswers = {};
       }
       state.extractedAnswers[previousNode] = extractedValueFinal;
 
-      // Log the transition
       console.log(`[GraphService] Node transition: ${previousNode} -> ${nextNode}`);
       console.log(`[GraphService] Raw answer saved: "${userMessage}"`);
       console.log(`[GraphService] Extracted value saved:`, JSON.stringify(extractedValueFinal));
 
-      // Update state with new values
       state.interestedInSelling = updatedState.interestedInSelling;
       state.hasOtherProperty = updatedState.hasOtherProperty;
       state.isTenantOccupied = updatedState.isTenantOccupied;
       state.isAnnualLease = updatedState.isAnnualLease;
       state.email = updatedState.email;
 
-      // Now update to the next node
       state.currentNode = nextNode;
 
       let aiResponseMessage = "";
@@ -737,7 +529,6 @@ export class GraphService {
         state.messages.push({ role: "ai", content: aiResponseMessage });
         state.lastQuestion = aiResponseMessage;
 
-        // Log completion summary
         this.logConversationSummary(username, state);
       } else {
         const nextQuestion = QUESTIONS[nextNode];
@@ -753,12 +544,10 @@ export class GraphService {
           aiResponseMessage = "Thank you for your time. Our team will be in touch soon. Have a great day!";
           state.messages.push({ role: "ai", content: aiResponseMessage });
 
-          // Log completion summary
           this.logConversationSummary(username, state);
         }
       }
 
-      // Log the interaction to file WITH the AI response
       this.storage.appendGraphLog(
         username,
         previousNode,
@@ -766,7 +555,7 @@ export class GraphService {
         userMessage,
         extractedValueFinal,
         nextNode,
-        aiResponseMessage // AI response that will be returned to API
+        aiResponseMessage
       );
 
       this.activeStates.set(username, state);
@@ -779,7 +568,6 @@ export class GraphService {
     }
   }
 
-  // Add method to log conversation summary
   private logConversationSummary(username: string, state: GraphState): void {
     console.log(`\n========== CONVERSATION SUMMARY: ${username} ==========`);
     console.log(`Completed: ${state.isComplete}`);
@@ -799,11 +587,9 @@ export class GraphService {
     console.log(`  email: ${state.email}`);
     console.log(`=======================================================\n`);
 
-    // Also save summary to log file
     this.storage.appendGraphSummary(username, state);
   }
 
-  // Add method to process current node directly
   private async processCurrentNode(
     node: ConversationNode,
     state: GraphStateType
@@ -900,11 +686,9 @@ ${recentHistory}`
   }
 
   private async processFallback(username: string, state: GraphState, userMessage: string): Promise<string> {
-    // Simple fallback processing without graph
     const previousNode = state.currentNode;
     const nextNode = this.determineNextNode(state.currentNode, state as any);
 
-    // Save answer for current node before updating
     state.answers[previousNode] = userMessage;
     state.currentNode = nextNode;
 
