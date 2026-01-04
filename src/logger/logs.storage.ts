@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Injectable } from "@nestjs/common";
 import { AnalysisResult } from "../caller/types";
 
 export type UserState = {
@@ -10,7 +11,8 @@ export type UserState = {
   interestedInSelling?: boolean | null;
 };
 
-export class CallerStorage {
+@Injectable()
+export class LogsStorage {
   private readonly logsDir: string;
   private readonly stateDir: string;
 

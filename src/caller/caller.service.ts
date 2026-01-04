@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 
-import { CallerStorage } from '../logger/caller.storage';
+import { LogsStorage } from '../logger/logs.storage';
 import { analyzeAnswer, isUserAskingQuestion } from './analyzer';
 import { ConversationMemoryManager } from './conversation.memory';
 import { evaluateConditionalFlow, type QuestionsFile } from './caller.flow';
@@ -18,8 +18,6 @@ export class CallerService {
   private readonly questionsPath =
     process.env.QUESTIONS_PATH ?? path.resolve(this.callerDir, 'questions.json');
 
-  private readonly storage = new CallerStorage();
-
   private readonly llm = new ChatOpenAI({
     model: process.env.MODEL,
     apiKey: process.env.API_KEY,
@@ -29,7 +27,7 @@ export class CallerService {
 
   private readonly memoryManager: ConversationMemoryManager;
 
-  constructor() {
+  constructor(private readonly storage: LogsStorage) {
     this.memoryManager = new ConversationMemoryManager(this.llm);
   }
 
