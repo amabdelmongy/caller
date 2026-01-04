@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Injectable } from "@nestjs/common";
 import { AnalysisResult } from "../caller/types";
+import { GraphState, GraphLogEntry, ConversationNode } from "../graph/types";
 
 export type UserState = {
   logPath?: string;
@@ -13,23 +14,25 @@ export type UserState = {
 
 @Injectable()
 export class LogsStorage {
+  private readonly baseDir: string;
   private readonly logsDir: string;
   private readonly stateDir: string;
+  private readonly graphStateDir: string;
 
-  constructor( ) {
-
-    var baseDir =  process.env.CALLER_LOG_DIR ?? "./data/logs";
-    this.logsDir = path.join(baseDir, "logs");
-    this.stateDir = path.join(baseDir, "state");
+  constructor() {
+    this.baseDir = process.env.CALLER_LOG_DIR ?? "./data/logs";
+    this.logsDir = path.join(this.baseDir, "logs");
+    this.stateDir = path.join(this.baseDir, "state");
+    this.graphStateDir = path.join(this.baseDir, "graph-state");
+    this.ensureDirs();
   }
 
-  ensureDirs() {
-    if (!fs.existsSync(this.logsDir)) {
-      fs.mkdirSync(this.logsDir, { recursive: true });
-    }
-    if (!fs.existsSync(this.stateDir)) {
-      fs.mkdirSync(this.stateDir, { recursive: true });
-    }
+  private ensureDirs(): void {
+    [this.logsDir, this.stateDir, this.graphStateDir].forEach((dir) => {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
   }
 
   getStatePath(username: string) {
@@ -256,5 +259,159 @@ export class LogsStorage {
     const v = (username ?? "").trim();
     if (!v) return "anonymous";
     return v.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 64);
+  }
+
+  // ─── Graph State Management ───────────────────────────────────────────
+
+  private getGraphStatePath(username: string): string {
+    return path.join(this.graphStateDir, `${this.sanitizeUsername(username)}.json`);
+  }
+
+  private getGraphLogPath(username: string): string {
+    const sanitized = this.sanitizeUsername(username);
+    const ts = new Date().toISOString().replace(/:/g, "-");
+    return path.join(this.logsDir, `graph.${sanitized}.${ts}.log`);
+  }
+
+  saveGraphState(state: GraphState): void {
+    const statePath = this.getGraphStatePath(state.username);
+    const stateToSave = {
+      ...state,
+      logPath: this.getOrCreateGraphLogPath(state.username),
+    };
+    fs.writeFileSync(statePath, JSON.stringify(stateToSave, null, 2), "utf8");
+  }
+
+  loadGraphState(username: string): GraphState | null {
+    const statePath = this.getGraphStatePath(username);
+    if (!fs.existsSync(statePath)) return null;
+
+    try {
+      const raw = fs.readFileSync(statePath, "utf8");
+      return JSON.parse(raw) as GraphState;
+    } catch {
+      return null;
+    }
+  }
+
+  clearGraphState(username: string): void {
+    const statePath = this.getGraphStatePath(username);
+    if (fs.existsSync(statePath)) {
+      fs.unlinkSync(statePath);
+    }
+  }
+
+  private getOrCreateGraphLogPath(username: string): string {
+    const state = this.loadGraphState(username);
+    if (state && (state as any).logPath) {
+      return (state as any).logPath;
+    }
+    return this.getGraphLogPath(username);
+  }
+
+  appendGraphLog(
+    username: string,
+    node: ConversationNode,
+    question: string,
+    userResponse: string,
+    extractedValue: any,
+    nextNode: ConversationNode,
+    aiResponse?: string // Add optional AI response parameter
+  ): void {
+    const logPath = this.getOrCreateGraphLogPath(username);
+
+    const entry: GraphLogEntry = {
+      timestamp: new Date().toISOString(),
+      node,
+      question,
+      userResponse,
+      extractedValue,
+      nextNode,
+    };
+
+    const extractedValueStr = typeof extractedValue === 'object'
+      ? JSON.stringify(extractedValue, null, 2)
+      : String(extractedValue);
+
+    let logLine = `[${entry.timestamp}] Node: ${node}
+  Question: ${question}
+  User Response: ${userResponse}
+  Extracted Value: ${extractedValueStr}
+  Next Node: ${nextNode}`;
+
+    if (aiResponse) {
+      logLine += `\n  AI Response: ${aiResponse}`;
+    }
+
+    logLine += `\n----------------------------------------\n`;
+
+    // Always log to console for visibility
+    console.log(`\n[API CHAT LOG] ==========================================`);
+    console.log(`[API CHAT LOG] Timestamp: ${entry.timestamp}`);
+    console.log(`[API CHAT LOG] Username: ${username}`);
+    console.log(`[API CHAT LOG] Current Node: ${node}`);
+    console.log(`[API CHAT LOG] Question: ${question}`);
+    console.log(`[API CHAT LOG] User Response: ${userResponse}`);
+    console.log(`[API CHAT LOG] Extracted Value:`, extractedValueStr);
+    console.log(`[API CHAT LOG] Next Node: ${nextNode}`);
+    if (aiResponse) {
+      console.log(`[API CHAT LOG] AI Response: ${aiResponse}`);
+    }
+    console.log(`[API CHAT LOG] Log File: ${logPath}`);
+    console.log(`[API CHAT LOG] ==========================================\n`);
+
+    try {
+      // Ensure directory exists
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(logPath, logLine, "utf8");
+    } catch (error) {
+      console.error(`[GraphLog ERROR] Failed to write log to ${logPath}:`, error);
+    }
+  }
+
+  appendGraphSummary(username: string, state: GraphState): void {
+    const logPath = this.getOrCreateGraphLogPath(username);
+    const timestamp = new Date().toISOString();
+
+    let summaryLog = `
+========================================
+[${timestamp}] CONVERSATION SUMMARY
+========================================
+Username: ${username}
+Completed: ${state.isComplete}
+
+--- RAW ANSWERS ---
+`;
+
+    for (const [node, answer] of Object.entries(state.answers || {})) {
+      summaryLog += `${node}: "${answer}"\n`;
+    }
+
+    summaryLog += `
+--- EXTRACTED VALUES ---
+`;
+
+    for (const [node, value] of Object.entries((state as any).extractedAnswers || {})) {
+      const valueStr = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      summaryLog += `${node}: ${valueStr}\n`;
+    }
+
+    summaryLog += `
+--- STATE FLAGS ---
+interestedInSelling: ${state.interestedInSelling}
+hasOtherProperty: ${state.hasOtherProperty}
+isTenantOccupied: ${state.isTenantOccupied}
+isAnnualLease: ${state.isAnnualLease}
+email: ${state.email}
+========================================
+
+`;
+
+    try {
+      fs.appendFileSync(logPath, summaryLog, "utf8");
+      console.log(`[GraphLog] Summary saved for ${username}`);
+    } catch (error) {
+      console.error(`[GraphLog ERROR] Failed to write summary:`, error);
+    }
   }
 }
