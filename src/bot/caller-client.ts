@@ -3,9 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import type { INestApplicationContext } from '@nestjs/common';
 import { AppModule } from '../app.module';
 
-// If you get: "Cannot find module '../caller/caller.service'"
-// adjust the import to the real location of CallerService in your repo.
-import { CallerService } from '../caller/caller.service';
+import { GraphService } from '../graph/graph.service';
 
 export interface CallerClient {
   chat(username: string, message: string): Promise<string>;
@@ -33,7 +31,7 @@ export async function createCallerClient(appCtx?: INestApplicationContext): Prom
       logger: ['error', 'warn'] // keep bot output clean
     }));
 
-  const caller = app.get(CallerService);
+  const caller = app.get(GraphService);
 
   return {
     async chat(username, message) {
