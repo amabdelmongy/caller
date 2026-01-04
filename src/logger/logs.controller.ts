@@ -1,14 +1,23 @@
-import { Controller, Get, Param, NotFoundException, Res } from '@nestjs/common';
-import type { Response } from 'express';
-import { CallerStorage } from '../caller/caller.storage';
+import { Controller, Get, Param, NotFoundException, Res, Req } from '@nestjs/common';
+import type { Response, Request } from 'express';
+import { CallerStorage } from './caller.storage';
 
 @Controller('logs')
 export class LogsController {
   private readonly storage = new CallerStorage();
 
   @Get()
-  list() {
-    return { files: this.storage.listLogFiles() };
+  list(@Req() req: Request) {
+    const files = this.storage.listLogFiles();
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+    return {
+      files: files.map((f) => ({
+        ...f,
+        url: `${baseUrl}/logs/${encodeURIComponent(f.name)}`,
+      })),
+    };
   }
 
   @Get(':filename')

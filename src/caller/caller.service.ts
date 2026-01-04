@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 
-import { CallerStorage } from './caller.storage';
+import { CallerStorage } from '../logger/caller.storage';
 import { analyzeAnswer, isUserAskingQuestion } from './analyzer';
 import { ConversationMemoryManager } from './conversation.memory';
 import { evaluateConditionalFlow, type QuestionsFile } from './caller.flow';
